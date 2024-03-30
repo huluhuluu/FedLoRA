@@ -10,11 +10,14 @@ from models.Update import DatasetSplit
 
 def test_(net_g, datatest, args):
     net_g.eval()
+    net_g.to(args.device)
     # testing
     test_loss = 0
     correct = 0
     data_loader = DataLoader(DatasetSplit(datatest, [i for i in range(len(datatest))]), batch_size=args.bs, shuffle=False)
     l = len(data_loader)
+
+    correct_label = set()
     for idx, (text, attention_mask, target) in enumerate(data_loader):
         if args.gpu != -1:
             text, attention_mask, target = text.to(args.device), attention_mask.to(args.device),  target.to(args.device)
@@ -24,6 +27,11 @@ def test_(net_g, datatest, args):
             test_loss += F.cross_entropy(logits, target, reduction='sum').item()
             # get the index of the max log-probability
             y_pred = logits.argmax(dim=1)  # get the index of the max log-probability
+
+            # record the correct prediction label
+            for i in range(len(y_pred)):
+                if y_pred[i] == target[i]:
+                    correct_label.add(target[i].item())
             # print(logits)
             # print(y_pred)
             # print(target)
@@ -31,6 +39,8 @@ def test_(net_g, datatest, args):
             correct += y_pred.eq(target).long().sum().item()
 
     test_loss /= len(data_loader.dataset)
+    print(correct, len(data_loader.dataset))
+    print(correct_label)
     accuracy = 100.0 * correct / len(data_loader.dataset)
     if args.verbose:
         print('\nTest set: Average loss: {:.4f} \nAccuracy: {}/{} ({:.2f}%)\n'.format(

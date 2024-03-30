@@ -16,6 +16,7 @@ def args_parser():
     parser.add_argument('--lr', type=float, default=0.01, help="learning rate")
     parser.add_argument('--momentum', type=float, default=0.5, help="SGD momentum (default: 0.5)")
     parser.add_argument('--split', type=str, default='user', help="train-test split type, user or sample")
+    parser.add_argument('--interval', type=int, default=10, help="loss and accuracy curve will be plotted every (interval) rounds")
 
     # other arguments
     parser.add_argument('--dataset', type=str, default='mnist', help="name of dataset")
