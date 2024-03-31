@@ -4,6 +4,11 @@
 
 import argparse
 
+FedAvg = "fedavg"
+FedSVD = "fedsvd"
+FedABOptim = "fedaboptim"
+
+
 def args_parser():
     parser = argparse.ArgumentParser()
     # federated arguments
@@ -16,6 +21,7 @@ def args_parser():
     parser.add_argument('--lr', type=float, default=0.01, help="learning rate")
     parser.add_argument('--momentum', type=float, default=0.5, help="SGD momentum (default: 0.5)")
     parser.add_argument('--split', type=str, default='user', help="train-test split type, user or sample")
+    parser.add_argument('--reduce_method', type=str, default=FedAvg, choices=[FedAvg, FedSVD, FedABOptim], help="method to reduce A and B")
 
     # other arguments
     parser.add_argument('--dataset', type=str, default='mnist', help="name of dataset")
