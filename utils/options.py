@@ -29,5 +29,8 @@ def args_parser():
     parser.add_argument('--gpu', type=int, default=0, help="GPU ID, -1 for CPU")
     parser.add_argument('--verbose', action='store_true', help='verbose print')
     parser.add_argument('--seed', type=int, default=1, help='random seed (default: 1)')
+
+    # lora arguments
+    parser.add_argument('--lora_rank', type=int, default=8, help='rank of lora (default: 8)')
     args = parser.parse_args()
     return args
