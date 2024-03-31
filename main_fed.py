@@ -6,7 +6,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import copy
-import os
+import sys
 import numpy as np
 import torch
 
@@ -21,7 +21,7 @@ from models.test import test_
 from datasets import load_dataset
 import torch.nn.modules
 
-# https://github.com/Desein-Yang/LoRA_Lightning
+# References code
 # https://github.com/alexriggio/BERT-LoRA-TensorRT/tree/main/notebooks
 # https://github.com/philschmid/deep-learning-pytorch-huggingface/blob/main/training/pytorch-2-0-bert-text-classification.ipynb
 
@@ -94,13 +94,13 @@ if __name__ == '__main__':
         # copy weight to net_glob
         net_glob.put_lora_parameters(lora_glob)
         
-        # compute loss and accuracy every 10 rounds
-        if iter%1 == 0:
+        # compute loss and accuracy every args.interval rounds
+        if iter % args.interval == 0:
             # compute loss
             loss_avg = sum(loss_locals) / len(loss_locals)
             loss_train.append(loss_avg)
 
-            # # test
+            ## test
             net_glob.put_lora_parameters(lora_glob)
             acc_test, loss_test = test_(net_glob.model, dataset_test, args)
             accuracy.append(acc_test)
@@ -109,14 +109,14 @@ if __name__ == '__main__':
     
     # plot loss curve
     plt.subplot(1, 2, 1)
-    plt.plot(range(len(loss_train)), loss_train)
+    plt.plot([i * args.interval for i in range(len(loss_train))], loss_train)
     plt.title('Training Loss')
     plt.xlabel('round')
     plt.ylabel('loss')
 
     # plot accuracy curve
     plt.subplot(1, 2, 2)
-    plt.plot(range(len(accuracy)), accuracy)
+    plt.plot([i * args.interval for i in range(len(loss_train))], accuracy)
     plt.title('Test Accuracy')
     plt.xlabel('round')
     plt.ylabel('accuracy')
@@ -125,6 +125,9 @@ if __name__ == '__main__':
     file_name = './save/fed_{}_C{}_iid{}.txt'.format(args.epochs, args.frac, args.iid)
     # write loss to file
     with open(file_name, 'w') as file:
+        # write command arg to file
+        file.write('Command line arg: ')
+        file.write(' '.join(sys.argv))
         for iter, (a, l) in enumerate(zip(accuracy, loss_train)):
-            file.write('Round {:3d}, Average loss {:.3f} Accuracy {:.3f}\n'.format(iter, l, a))
+            file.write('Round {:3d}, Average loss {:.3f} Accuracy {:.3f}\n'.format(iter * args.interval, l, a))
         file.write('\n')

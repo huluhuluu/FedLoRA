@@ -39,6 +39,7 @@ class LocalUpdate(object):
 
     def train(self, net):
         net.model.train()
+        net.model.to(self.args.device)
         # train and update
         optimizer = torch.optim.SGD(net.model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         

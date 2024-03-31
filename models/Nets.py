@@ -12,7 +12,7 @@ import copy
 import os
 
 class BertLora():
-    def __init__(self, num_labels, rank = 2, lora_alpha = 16, args = None):
+    def __init__(self, num_labels, rank = 16, lora_alpha = 16, args = None):
         # Model id to load the tokenizer
         model_id = "bert-base-uncased"
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='./cache/tokenizer')
