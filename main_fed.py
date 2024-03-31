@@ -82,7 +82,8 @@ if __name__ == '__main__':
         # modify
 
         # update global weights
-        lora_glob = FedAvg(lora_locals)
+        if args.reduce_method == options.FedAvg:
+            lora_glob = FedAvg(lora_locals)
 
         # copy weight to net_glob
         net_glob.put_lora_parameters(lora_glob)
