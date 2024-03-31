@@ -46,7 +46,7 @@ if __name__ == '__main__':
         dict_users = dataset_noniid(dataset_train, args.num_users)
     
     # build model
-    net_glob = BertLora(num_labels = len(labels), args = args)
+    net_glob = BertLora(num_labels = len(labels), rank=args.lora_rank, args = args)
     # print(net_glob.model)
    
     # copy A,B weights
