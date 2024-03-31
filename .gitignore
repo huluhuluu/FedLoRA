@@ -49,3 +49,7 @@ wheels/
 venv/
 ENV/
 
+**/.history/
+cache/
+.vscode/
+**/__pycache__
