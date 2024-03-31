@@ -12,9 +12,11 @@ import torch
 
 from utils.sampling import dataset_iid, dataset_noniid
 from utils.options import args_parser
+from utils import options
 from models.Update import LocalUpdate
 from models.Nets import BertLora
 from models.Fed import FedAvg
+from models.Fed import FedSVD, FedABOptim
 from models.test import test_
 from datasets import load_dataset
 import torch.nn.modules
@@ -84,6 +86,10 @@ if __name__ == '__main__':
         # update global weights
         if args.reduce_method == options.FedAvg:
             lora_glob = FedAvg(lora_locals)
+        elif args.reduce_method == options.FedSVD:
+            lora_glob = FedSVD(lora_locals, args.lora_rank)
+        elif args.reduce_method == options.FedABOptim:
+            lora_glob = FedABOptim(lora_locals)
 
         # copy weight to net_glob
         net_glob.put_lora_parameters(lora_glob)
