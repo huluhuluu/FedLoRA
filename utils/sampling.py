@@ -41,15 +41,15 @@ def dataset_noniid(dataset, num_users, num_shards=200):
     idxs = np.arange(num_shards*num_case)
 
     labels = np.array(dataset["label"])
+
     # Match the length of idxs
-    random_indices_to_keep = np.random.choice(len(labels), len(idxs), replace=False)
-    labels = labels[random_indices_to_keep]
+    labels = labels[0: num_shards*num_case]
 
     # sort labels
     idxs_labels = np.vstack((idxs, labels))
     idxs_labels = idxs_labels[:,idxs_labels[1,:].argsort()]
     idxs = idxs_labels[0,:]
-
+    
     # divide and assign
     while idx_shard:
         random.shuffle(idx_shard)  # shuffle the order of the shards

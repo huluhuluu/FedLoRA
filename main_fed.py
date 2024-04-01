@@ -25,6 +25,51 @@ import torch.nn.modules
 # https://github.com/alexriggio/BERT-LoRA-TensorRT/tree/main/notebooks
 # https://github.com/philschmid/deep-learning-pytorch-huggingface/blob/main/training/pytorch-2-0-bert-text-classification.ipynb
 
+# get label counts
+def get_label_count(dataset_train, dataset_test):
+    # get label counts
+    label_counts_train = {}
+    label_counts_test = {}
+
+    # traverse all train data
+    for i in range(len(dataset_train)):
+        if label_counts_train.get(dataset_train[i]['label']) is None:
+            label_counts_train[dataset_train[i]['label']] = 1
+        else:
+            label_counts_train[dataset_train[i]['label']] += 1
+    
+    # traverse all test data
+    for i in range(len(dataset_test)):
+        if label_counts_test.get(dataset_test[i]['label']) is None:
+            label_counts_test[dataset_test[i]['label']] = 1
+        else:
+            label_counts_test[dataset_test[i]['label']] += 1
+    
+
+    # print label counts res
+    for key in label_counts_train.keys():
+        print('label: {},train count: {} test count: {}'.format(
+            key, 
+            label_counts_train[key], 
+            label_counts_test[key] if label_counts_test.get(key) is not None else 0))
+
+# get label counts after sampling
+def get_label_count_sample(dataset, users):
+    label_counts = {}
+    users = list(users)
+    for i in range(len(users)):
+        ind = int(users[i])
+        if label_counts.get(dataset[ind]['label']) is None:
+            label_counts[dataset[ind]['label']] = 1
+        else:
+            label_counts[dataset[ind]['label']] += 1
+    
+    sum_count = 0
+    for key in label_counts.keys():
+        print('label: {}, count: {}'.format(key, label_counts[key]))
+        sum_count += 1
+    print('label num: {}'.format(sum_count))
+
 if __name__ == '__main__':
     # parse args
     args = args_parser()
@@ -40,12 +85,17 @@ if __name__ == '__main__':
     dataset_test = raw_dataset['test']
     labels = dataset_train.features["label"].names
     # print(len(dataset_train), len(dataset_test)) # 10003 3080
+    # get_label_count(dataset_train, dataset_test)
     
     # sample users
+    dataset_train = dataset_train.shuffle(seed=42)
     if args.iid:
         dict_users = dataset_iid(dataset_train, args.num_users)
     else:
         dict_users = dataset_noniid(dataset_train, args.num_users)
+    
+    # get_label_count_sample(dataset_train, dict_users[0])
+    # non iid: label num:3
     
     # build model
     net_glob = BertLora(num_labels = len(labels), rank=args.lora_rank, args = args)
@@ -128,6 +178,7 @@ if __name__ == '__main__':
         # write command arg to file
         file.write('Command line arg: ')
         file.write(' '.join(sys.argv))
+        file.write('\n')
         for iter, (a, l) in enumerate(zip(accuracy, loss_train)):
             file.write('Round {:3d}, Average loss {:.3f} Accuracy {:.3f}\n'.format(iter * args.interval, l, a))
         file.write('\n')
