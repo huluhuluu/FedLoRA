@@ -54,7 +54,9 @@ def get_label_count(dataset_train, dataset_test):
             label_counts_test[key] if label_counts_test.get(key) is not None else 0))
 
 # get label counts after sampling
-def get_label_count_sample(dataset, users):
+# dataset: dataset_train
+# users: sampled index for users
+def get_label_count_sample(dataset, users, verbose = True):
     label_counts = {}
     users = list(users)
     for i in range(len(users)):
@@ -64,11 +66,12 @@ def get_label_count_sample(dataset, users):
         else:
             label_counts[dataset[ind]['label']] += 1
     
-    sum_count = 0
+    sum_label_count = 0
     for key in label_counts.keys():
-        print('label: {}, count: {}'.format(key, label_counts[key]))
-        sum_count += 1
-    print('label num: {}'.format(sum_count))
+        if verbose:
+            print('label: {}, count: {}'.format(key, label_counts[key]))
+        sum_label_count += 1
+    print('label num: {}, data num {}'.format(sum_label_count, len(users)))
 
 if __name__ == '__main__':
     # parse args
@@ -107,12 +110,12 @@ if __name__ == '__main__':
     # print(lora_glob[0][0][1].shape) # q_lora_B
     
     # training
-    loss_train = []
-    accuracy = []
+    loss_train, loss_test = [], []
+    acc_train, acc_test = [], []
 
     for iter in range(args.epochs):
         # train
-        loss_locals = []
+        loss_locals, acc_locals = [], []
         lora_locals = []
 
         # num of selected users and selected users
@@ -125,11 +128,16 @@ if __name__ == '__main__':
             net_glob.put_lora_parameters(lora_glob)
 
             local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx])
-            # exit()
-            lora, loss = local.train(net = net_glob)
+            if args.verbose:
+                # print iter and idx
+                print('Round {:3d}, User {:3d}'.format(iter, idx))
+                get_label_count_sample(dataset_train, dict_users[idx], verbose = False)
+            
+            lora, loss, acc = local.train(net = net_glob)
 
             lora_locals.append(copy.deepcopy(lora))
             loss_locals.append(copy.deepcopy(loss))
+            acc_locals.append(copy.deepcopy(acc))
 
         # modify
 
@@ -150,13 +158,19 @@ if __name__ == '__main__':
             loss_avg = sum(loss_locals) / len(loss_locals)
             loss_train.append(loss_avg)
 
+            # compute accuracy
+            acc_avg = sum(acc_locals) / len(acc_locals)
+            acc_train.append(acc_avg)
+
             ## test
             net_glob.put_lora_parameters(lora_glob)
-            acc_test, loss_test = test_(net_glob.model, dataset_test, args)
-            accuracy.append(acc_test)
-        
-            print('Round {:3d}, Average loss {:.3f} Accuracy {:.3f}'.format(iter, loss_avg, acc_test))
-    
+            acc_test_local, loss_test_local = test_(net_glob.model, dataset_test, args)
+            acc_test.append(acc_test_local)
+            loss_test.append(loss_test_local)
+
+            # print loss, train acc, test acc
+            print('Round {:3d}, Average loss {:.3f}, Train accuracy {:.3f}, Test accuracy {:.3f}'.
+                  format(iter,loss_avg, acc_avg, acc_test_local))
     # plot loss curve
     plt.subplot(1, 2, 1)
     plt.plot([i * args.interval for i in range(len(loss_train))], loss_train)
@@ -166,7 +180,7 @@ if __name__ == '__main__':
 
     # plot accuracy curve
     plt.subplot(1, 2, 2)
-    plt.plot([i * args.interval for i in range(len(loss_train))], accuracy)
+    plt.plot([i * args.interval for i in range(len(loss_train))], acc_test)
     plt.title('Test Accuracy')
     plt.xlabel('round')
     plt.ylabel('accuracy')
@@ -179,6 +193,6 @@ if __name__ == '__main__':
         file.write('Command line arg: ')
         file.write(' '.join(sys.argv))
         file.write('\n')
-        for iter, (a, l) in enumerate(zip(accuracy, loss_train)):
+        for iter, (a, l) in enumerate(zip(acc_test, loss_train)):
             file.write('Round {:3d}, Average loss {:.3f} Accuracy {:.3f}\n'.format(iter * args.interval, l, a))
         file.write('\n')

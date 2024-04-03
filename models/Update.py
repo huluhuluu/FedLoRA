@@ -44,8 +44,10 @@ class LocalUpdate(object):
         optimizer = torch.optim.SGD(net.model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         
         epoch_loss = []
+        acc_ = [0 for i in range(self.args.local_ep)]
         for iter in range(self.args.local_ep):
             batch_loss = []
+            correct = 0
             for batch_idx, (text, attention_mask, label) in enumerate(self.ldr_train):
                 text, attention_mask, label = text.to(self.args.device), attention_mask.to(self.args.device), label.to(self.args.device)
 
@@ -53,14 +55,21 @@ class LocalUpdate(object):
 
                 logits = net.model(text, attention_mask=attention_mask).logits  # Get logits from model output
                 loss = self.loss_func(logits, label)
+
+                # deepcopy logits and label
+                logits_copy = logits.detach().clone()
+                label_copy = label.detach().clone()
+                y_pred = logits_copy.argmax(dim=1)  # get the index of the max log-probability
+                correct += y_pred.eq(label_copy).long().sum().item() # get correct num
                 
                 loss.backward()
                 optimizer.step()
-                if self.args.verbose and batch_idx % 10 == 0:
-                    print('Update Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                        iter, batch_idx * len(text), len(self.ldr_train.dataset),
-                               100. * batch_idx / len(self.ldr_train), loss.item()))
                 batch_loss.append(loss.item())
+            # add accuracy to acc_
+            acc_[iter] = correct / len(self.ldr_train.dataset)
+            if self.args.verbose:
+                print('Update Epoch: {} \tAverage Loss: {:.6f}\tAccuracy: {:.2f}%'.format(
+                    iter, sum(batch_loss) / len(batch_loss), 100. * correct / len(self.ldr_train.dataset)))
             epoch_loss.append(sum(batch_loss)/len(batch_loss))
-        return net.get_lora_parameters(), sum(epoch_loss) / len(epoch_loss)
+        return net.get_lora_parameters(), sum(epoch_loss) / len(epoch_loss), acc_[-1]
 

@@ -39,10 +39,9 @@ def test_(net_g, datatest, args):
             correct += y_pred.eq(target).long().sum().item()
 
     test_loss /= len(data_loader.dataset)
-    print(correct, len(data_loader.dataset))
-    print(correct_label)
     accuracy = 100.0 * correct / len(data_loader.dataset)
     if args.verbose:
+        print('correct labels:', correct_label)
         print('\nTest set: Average loss: {:.4f} \nAccuracy: {}/{} ({:.2f}%)\n'.format(
             test_loss, correct, len(data_loader.dataset), accuracy))
     return accuracy, test_loss
