@@ -15,9 +15,9 @@ def test_(net_g, datatest, args):
     test_loss = 0
     correct = 0
     data_loader = DataLoader(DatasetSplit(datatest, [i for i in range(len(datatest))]), batch_size=args.bs, shuffle=False)
-    l = len(data_loader)
 
-    correct_label = set()
+    correct_label, answer_label = set(), set()
+    logits_list = []
     for idx, (text, attention_mask, target) in enumerate(data_loader):
         if args.gpu != -1:
             text, attention_mask, target = text.to(args.device), attention_mask.to(args.device),  target.to(args.device)
@@ -32,16 +32,17 @@ def test_(net_g, datatest, args):
             for i in range(len(y_pred)):
                 if y_pred[i] == target[i]:
                     correct_label.add(target[i].item())
-            # print(logits)
-            # print(y_pred)
-            # print(target)
-            # exit()
+                answer_label.add(y_pred[i].item())
+            logits_list.append(logits)
             correct += y_pred.eq(target).long().sum().item()
 
     test_loss /= len(data_loader.dataset)
     accuracy = 100.0 * correct / len(data_loader.dataset)
     if args.verbose:
-        print('correct labels:', correct_label)
-        print('\nTest set: Average loss: {:.4f} \nAccuracy: {}/{} ({:.2f}%)\n'.format(
+        if correct == 40:
+            print('logits_list:', logits_list)
+            print('correct labels:', correct_label)
+            print('answer labels:', answer_label)
+        print('\nTest set: Average loss: {:.4f} \tAccuracy: {}/{} ({:.2f}%)\n'.format(
             test_loss, correct, len(data_loader.dataset), accuracy))
     return accuracy, test_loss

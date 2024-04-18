@@ -15,12 +15,13 @@ from utils.options import args_parser
 from utils import options
 from models.Update import LocalUpdate
 from models.Nets import BertLora
-from models.Fed import FedAvg
+from models.Fed import FedAVG, FedAvgInverse
 from models.Fed import FedSVD, FedABOptim
 from models.test import test_
 from datasets import load_dataset
 import torch.nn.modules
-
+# set full print
+torch.set_printoptions(profile="full")
 # References code
 # https://github.com/alexriggio/BERT-LoRA-TensorRT/tree/main/notebooks
 # https://github.com/philschmid/deep-learning-pytorch-huggingface/blob/main/training/pytorch-2-0-bert-text-classification.ipynb
@@ -82,7 +83,8 @@ if __name__ == '__main__':
     dataset_id = "PolyAI/banking77" 
 
     # get data from huggingface.co/dataset
-    raw_dataset = load_dataset(dataset_id, cache_dir='./cache/data')
+    # raw_dataset = load_dataset(dataset_id, cache_dir='./cache/data')
+    raw_dataset = load_dataset(dataset_id, cache_dir='/data/huluhulu/fedbertlora/cache/data')
 
     dataset_train = raw_dataset['train']
     dataset_test = raw_dataset['test']
@@ -130,7 +132,7 @@ if __name__ == '__main__':
             local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx])
             if args.verbose:
                 # print iter and idx
-                print('Round {:3d}, User {:3d}'.format(iter, idx))
+                print('\nRound {:3d}, User {:3d}'.format(iter, idx))
                 get_label_count_sample(dataset_train, dict_users[idx], verbose = False)
             
             lora, loss, acc = local.train(net = net_glob)
@@ -139,13 +141,11 @@ if __name__ == '__main__':
             loss_locals.append(copy.deepcopy(loss))
             acc_locals.append(copy.deepcopy(acc))
 
-        # modify
-
         # update global weights
         if args.reduce_method == options.FedAvg:
-            lora_glob = FedAvg(lora_locals)
+            lora_glob, _, _, _, _ = FedAVG(lora_locals, args)
         elif args.reduce_method == options.FedSVD:
-            lora_glob = FedSVD(lora_locals, args.lora_rank)
+            lora_glob = FedSVD(lora_locals, args.lora_rank, args)
         elif args.reduce_method == options.FedABOptim:
             lora_glob = FedABOptim(lora_locals)
 
@@ -171,6 +171,18 @@ if __name__ == '__main__':
             # print loss, train acc, test acc
             print('Round {:3d}, Average loss {:.3f}, Train accuracy {:.3f}, Test accuracy {:.3f}'.
                   format(iter,loss_avg, acc_avg, acc_test_local))
+    
+    # path
+    path_name = './save/{path}/fed_{epochs}_C{frac}_iid{iid}_localep{local_ep}{rank}{method}'.format(
+                    path = args.reduce_method,
+                    epochs = args.epochs,
+                    frac = args.frac,
+                    iid = args.iid,
+                    local_ep = args.local_ep,
+                    rank = '_rank{}'.format(args.lora_rank) if args.autorank == False or args.reduce_method != options.FedSVD else '_autorank',
+                    method = '_{}'.format(args.reduce_method)
+                )
+
     # plot loss curve
     plt.subplot(1, 2, 1)
     plt.plot([i * args.interval for i in range(len(loss_train))], loss_train)
@@ -184,11 +196,10 @@ if __name__ == '__main__':
     plt.title('Test Accuracy')
     plt.xlabel('round')
     plt.ylabel('accuracy')
-    plt.savefig('./save/fed_{}_C{}_iid{}.png'.format(args.epochs, args.frac, args.iid))
-    
-    file_name = './save/fed_{}_C{}_iid{}.txt'.format(args.epochs, args.frac, args.iid)
+    plt.savefig(path_name + '.png')
+
     # write loss to file
-    with open(file_name, 'w') as file:
+    with open(path_name + '.txt', 'w') as file:
         # write command arg to file
         file.write('Command line arg: ')
         file.write(' '.join(sys.argv))

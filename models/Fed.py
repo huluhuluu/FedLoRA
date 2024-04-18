@@ -5,6 +5,8 @@
 import copy
 import torch
 from torch import optim
+import matplotlib.pyplot as plt
+import os
 
 # lora = [ [[(q_lora_a, q_lora_b), (v_lora_a, v_lora_b)], ...]      # client 0
 #          [[(q_lora_a, q_lora_b), (v_lora_a, v_lora_b)], ...]      # client 1
@@ -12,45 +14,237 @@ from torch import optim
 #                                                         ...]      # client n
 # the lora parameters' shape is (client_num, layer_num, 2, 2, lora_size)
 # in this function we average the lora parameters of all clients
-def FedAvg(lora):
-    # copy client 0's lora parameters
-    lora_avg = copy.deepcopy(lora[0])
-    
-    # aggregation the lora parameters of all clients
-    for i in range(1, len(lora)):   # traverse all clients
-        for j in range(len(lora_avg)):  # traverse all layers
-            for k in range(len(lora_avg[j])):   # traverse all modules
-                for l in range(len(lora_avg[j][k])):    # traverse all parameters
-                    lora_avg[j][k][l] = torch.add(lora_avg[j][k][l], lora[i][j][k][l])
+# get average of matrix A, B, W(AB)
+def FedAVG(lora, args):
+    # get avg A value, B value and average A*B value
+    # A_avg = [ [q_lora_a, v_lora_a], ...]      # different layers
+    # B_avg = [ [q_lora_b, v_lora_b], ...]      # different layers
+    # W_avg = [ [q_lora_b * q_lora_b, v_lora_a * v_lora_b], ...]      # different layers
+    # lora_avg shape is parameter lora shape
+    A_avg, B_avg, W_avg, lora_avg = [], [], [], []
 
-    # average the lora parameters
-    for j in range(len(lora_avg)):
-        for k in range(len(lora_avg[j])):
-            for l in range(len(lora_avg[j][k])):
-                lora_avg[j][k][l] = torch.div(lora_avg[j][k][l], len(lora))
+    # init A_avg, B_avg and W_avg
+    for ind, layer in enumerate(lora[0]):
+        A_avg.append([copy.deepcopy(layer[0][0]), copy.deepcopy(layer[1][0]) ] )
+        B_avg.append([copy.deepcopy(layer[0][1]), copy.deepcopy(layer[1][1]) ] )
+        W_avg.append([torch.mm(layer[0][1], layer[0][0]), torch.mm(layer[1][1], layer[1][0])])
+
+    # aggregation the A_avg, B_avg and W_avg for all clients
+    for ind, client in enumerate(lora[1:]): # traverse all clients
+        for layer_ind, layer in enumerate(client): # traverse all layers
+            for qv_ind, qv in enumerate(layer): # traverse all modules
+                A_avg[layer_ind][qv_ind] = torch.add(A_avg[layer_ind][qv_ind], qv[0])
+                B_avg[layer_ind][qv_ind] = torch.add(B_avg[layer_ind][qv_ind], qv[1])
+                W_avg[layer_ind][qv_ind] = torch.add(W_avg[layer_ind][qv_ind], torch.mm(qv[1], qv[0]))
+
+    # average the A_avg, B_avg and W_avg:
+    for j in range(len(A_avg)):
+        lora_para = []
+        for k in range(len(A_avg[0])):   # traverse all modulesd
+            A_avg[j][k] = torch.div(A_avg[j][k], len(lora))
+            B_avg[j][k] = torch.div(B_avg[j][k], len(lora))
+            W_avg[j][k] = torch.div(W_avg[j][k], len(lora))
+            
+            lora_para.append([A_avg[j][k], B_avg[j][k]])
+
+        # get lora avg parameter
+        lora_avg.append(lora_para)
+
+    # compute loss |W_avg - B_avg * A_avg|
+    loss_list, sum_loss = [], 0
+    for j in range(len(W_avg)): # traverse all layers
+        qv_loss_list, qv_loss = [], 0
+        for k in range(len(W_avg[0])):
+            # compute loss |W_avg - B_avg * A_avg|
+            qv_loss = torch.norm(W_avg[j][k] - torch.mm(B_avg[j][k], A_avg[j][k]))
+            # sum loss
+            sum_loss += qv_loss.item()
+            qv_loss_list.append(qv_loss.item())
+        loss_list.append(qv_loss_list)
+    print('total fedavg loss: ', sum_loss)
+
+    return lora_avg, A_avg, B_avg, W_avg, loss_list
+
+
+
+def FedAvgInverse(lora, args, r = 8, pad_val = 0.001):
+    # get avg A value, B value and average A*B value
+    lora_avg, A_avg, B_avg, W_avg = FedAVG(lora,args)
+    
+    # padding A_avg to (n, n)
+    # 1. get rank of A_avg
+    # 2. if(rank < r) add padding row to  A_avg from row 'rank' to row 'r'
+    # 3. padding A_avg to (n, n), from row r to row n
+    # padding method: row j padding [0, 0 , 0 , ..., pad_val, ... ] (pad_val in the j-th row)
+    
+    # 1. get rank of A_avg
+    A_rank = []
+    W_rank = []
+    for j in range(len(A_avg)):
+        A_rank.append([torch.linalg.matrix_rank(A_avg[j][0]), torch.linalg.matrix_rank(A_avg[j][1])])
+        W_rank.append([torch.linalg.matrix_rank(W_avg[j][0]), torch.linalg.matrix_rank(W_avg[j][1])])
+    
+    # print rank
+    if args.verbose:
+        print("A_rank:", A_rank)
+        print("W_rank:", W_rank)
+    
+    # 2. if(rank < r) add padding row to  A_avg from row 'rank' to row 'r'
+    for layer_ind, layer in enumerate(A_avg): # traverse all layers
+        for qv_ind, qv in enumerate(layer): # traverse all modules
+            if A_rank[layer_ind][qv_ind] < r:   
+                rank = A_rank[layer_ind][qv_ind]
+                padding = torch.zeros_like(qv)
+                # actually row: [rank-1, r-1]
+                for row in range(rank, r):
+                    padding[row, row] = pad_val
+                # print(qv.shape) # 8 * 768
+                A_avg[layer_ind][qv_ind] = torch.add(qv, padding)               
+    
+    # 3. padding A_avg to (n, n), from row r to row n
+    #    and compute B_avg
+    # set print full
+    for layer_ind, layer in enumerate(B_avg): # traverse all layers
+        for qv_ind, qv in enumerate(layer): # traverse all modules
+            # padding A_avg to (n, n), from row r to row n
+            new_A = torch.zeros_like(W_avg[layer_ind][qv_ind])
+            W = W_avg[layer_ind][qv_ind].detach().clone()
+            loss1 = 0
+            # add A_avg to new_A
+            for i in range(new_A.shape[0]):
+                for j in range(new_A.shape[1]):
+                    if i < A_avg[layer_ind][qv_ind].shape[0] and j < A_avg[layer_ind][qv_ind].shape[1]:
+                        new_A[i, j] = A_avg[layer_ind][qv_ind][i, j]
+                    elif i == j:
+                        new_A[i, j] = pad_val
+                        # compute loss w[i,j]^2
+                        loss1 += W[i, j] ** 2
+                        W[i, j] = 0
+            # print(new_A.shape) # 768 * 768
+            # compute B_avg
+            # W_avg = B_avg * A_avg
+            # B_avg = W_avg * A_avg^(-1)
+            # truncate B_avg to (n, r)
+            # full
+    
+            B_avg[layer_ind][qv_ind] = torch.mm(W, torch.linalg.inv(new_A))[:,:A_avg[layer_ind][qv_ind].shape[0]]
+    # 4. compute loss and get lora_avg
+    loss = 0
+    for layer_ind, layer in enumerate(lora_avg):
+        for qv_ind, qv in enumerate(layer):
+            lora_avg[layer_ind][qv_ind] = [A_avg[layer_ind][qv_ind].detach().clone(), B_avg[layer_ind][qv_ind].detach().clone()]
+            loss += torch.norm(W_avg[layer_ind][qv_ind] - torch.mm(B_avg[layer_ind][qv_ind], A_avg[layer_ind][qv_ind]))
+    print(f"avg inverse loss: {loss:.10f}, analyse loss: {loss1:.10f}")
     return lora_avg
 
+def analyse_svd(W, U, S, V):
+    # resolve file path conflicts
+    png_path = 'save/analyse/svd.png'
+    txt_path = 'save/analyse/svd.txt'
+    # if exists, add a number to the file name
+    if os.path.exists(png_path):
+        index = 1
+        while index < 5:
+            new_png_path = f'save/analyse/svd_{index}.png'
+            new_txt_path = f'save/analyse/svd_{index}.txt'
+            if not os.path.exists(new_png_path):
+                png_path = new_png_path
+                txt_path = new_txt_path
+                break
+            index += 1
+        if index == 5:
+            return
+    # statistics
+    errors, ratios, s = [], [], []
+    singular_val_sum = 0
+    for rank in range(1, W.shape[0]//5 + 1):
+        # decompose W
+        B = U[:, :rank] * torch.sqrt(S[:rank])
+        A = torch.sqrt(S[:rank]).unsqueeze(1) * V[:rank, :]
+        W_approx = torch.mm(B, A)
+        # compute loss
+        loss = torch.norm(W - W_approx)
+        # compute singular value sum
+        singular_val_sum += S[rank].item()
 
-def SVD(W, r: int):
-    # 进行奇异值分解
+        errors.append(loss.item())
+        ratios.append(singular_val_sum)
+        s.append(S[rank].item())
+    # plot
+    plt.figure(figsize=(15, 5))
+    
+    # fig1
+    plt.subplot(2, 2, 1)
+    plt.plot(range(len(errors)), errors)
+    plt.title('Reconstruction Error')
+    plt.xlabel('r')
+    plt.ylabel('Error')
+    # fig2
+    plt.subplot(2, 2, 2)
+    ratios = [ s_ / singular_val_sum for s_ in ratios ]
+    plt.plot(range(len(ratios)), ratios)
+    plt.title('Singular Values Ratio')
+    plt.xlabel('r')
+    plt.ylabel('Ratio')
+    # fig 3
+    plt.subplot(2, 2, 3)
+    plt.plot(range(len(s)), s)
+    plt.title('Singular Values')
+    plt.xlabel('Index')
+    plt.ylabel('Value')
+    # fig4
+    plt.subplot(2, 2, 4)
+    plt.plot(range(len(errors)), errors, label='Errors')
+    plt.plot(range(len(ratios)), ratios, label='Ratios')
+    plt.plot(range(len(s)), s, label='Singular Values')
+    plt.title('Combined Plot')
+    plt.xlabel('Index')
+    plt.ylabel('Value')
+    plt.legend()
+
+    plt.savefig(png_path)
+    # save to txt
+    with open(txt_path, 'w') as f:
+        for i in range(len(errors)):
+            f.write(f'Rank: {i+1:.3d}, Error: {errors[i]:.10f}, Ratio: {ratios[i]:.10f}, Singular Value: {s[i]:.10f}\n')
+
+def SVD(W, r: int, args):
+    # SVD
     U, S, V = torch.linalg.svd(W, full_matrices=False)
 
     # print("U:\n", U)
-    # print("S:", S, S.shape)
+    # print("S:", S[0:15], S.shape)
     # print("V:\n", V)
-
+    # analyse_svd(W, U, S, V)
+    
+    # use svd singular value guide rank
+    if args.autorank:
+        # get rank of SVD
+        singular_val_sum, tmp_sum, rank = S.sum().item(), 0, 0
+        
+        for i in range(W.shape[0]):
+            tmp_sum += S[i].item()
+            if tmp_sum / singular_val_sum > args.theta:
+                rank = i + 1
+                break
+        r = rank
+    
+    # reconstruct B and A
     B = U[:, :r] * torch.sqrt(S[:r])
     A = torch.sqrt(S[:r]).unsqueeze(1) * V[:r, :]
     W_approx = torch.mm(B, A)
 
     # loss = torch.norm(W - W_approx) / W.numel()
     loss = torch.norm(W - W_approx)
-    print(f"重构误差: {loss:.10f}", )
+    # if args.verbose:
+    #     print(f"reconstruct loss: {loss:.10f}", )
 
-    return A, B, loss
+    return A, B, loss, r
 
 
-def FedSVD(lora, r: int):
+def FedSVD(lora, r: int, args):
+    _, _, _, _, loss_avg = FedAVG(lora, args)
+    print('fedavg loss list:', loss_avg)
     # 1. W_{i} = B_{i}A_{i}
     # 2. W = avg(W_{i})
     # 3. A, B = SVD(W, r)
@@ -87,16 +281,22 @@ def FedSVD(lora, r: int):
     # SVD
     result = copy.deepcopy(lora[0])
     total_loss = 0
+    rank_list, loss_svd = [], []
     for layer_index, layer_weight in enumerate(layer_weight_list):
-        q_a, q_b, loss = SVD(layer_weight[0], r)
-        total_loss += loss
-        v_a, v_b, loss = SVD(layer_weight[1], r)
-        total_loss += loss
+        q_a, q_b, loss1, r1 = SVD(layer_weight[0], r, args)
+        v_a, v_b, loss2, r2 = SVD(layer_weight[1], r, args)
+        total_loss += loss1.item() + loss2.item()
         result[layer_index][0] = (q_a, q_b)
         result[layer_index][1] = (v_a, v_b)
-
-    print(f"total average loss is {total_loss:.10f}")
-
+        loss_svd.append([loss1.item(), loss2.item()])
+        rank_list.append([r1, r2])
+    
+    print(f"total fedsvd loss is {total_loss:.10f}")
+    print(f"fedsvd loss list:", loss_svd)
+    print(f"rank list: {rank_list}")
+    # print avg rank
+    rank = sum([r1 + r2 for r1, r2 in rank_list]) // ( len(rank_list) * 2 )
+    print(f"avg rank: {rank}")
     return result
 
 

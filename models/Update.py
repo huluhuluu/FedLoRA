@@ -12,7 +12,8 @@ from transformers import AutoTokenizer
 # Model id to load the tokenizer
 model_id = "bert-base-uncased"
 # Load Tokenizer
-tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='./cache/tokenizer')
+# tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='./cache/tokenizer')
+tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='/data/huluhulu/fedbertlora/cache/tokenizer')
 
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
@@ -48,6 +49,9 @@ class LocalUpdate(object):
         for iter in range(self.args.local_ep):
             batch_loss = []
             correct = 0
+
+            correct_label = set()
+            answer_label = set()
             for batch_idx, (text, attention_mask, label) in enumerate(self.ldr_train):
                 text, attention_mask, label = text.to(self.args.device), attention_mask.to(self.args.device), label.to(self.args.device)
 
@@ -61,6 +65,11 @@ class LocalUpdate(object):
                 label_copy = label.detach().clone()
                 y_pred = logits_copy.argmax(dim=1)  # get the index of the max log-probability
                 correct += y_pred.eq(label_copy).long().sum().item() # get correct num
+                # record the correct prediction label
+                for i in range(len(y_pred)):
+                    if y_pred[i] == label_copy[i]:
+                        correct_label.add(label_copy[i].item())
+                    answer_label.add(y_pred[i].item())
                 
                 loss.backward()
                 optimizer.step()
@@ -68,6 +77,8 @@ class LocalUpdate(object):
             # add accuracy to acc_
             acc_[iter] = correct / len(self.ldr_train.dataset)
             if self.args.verbose:
+                # print('correct labels:', correct_label)
+                # print('answer labels:', answer_label)
                 print('Update Epoch: {} \tAverage Loss: {:.6f}\tAccuracy: {:.2f}%'.format(
                     iter, sum(batch_loss) / len(batch_loss), 100. * correct / len(self.ldr_train.dataset)))
             epoch_loss.append(sum(batch_loss)/len(batch_loss))

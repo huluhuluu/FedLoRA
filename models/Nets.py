@@ -15,11 +15,12 @@ class BertLora():
     def __init__(self, num_labels, rank = 16, lora_alpha = 16, args = None):
         # Model id to load the tokenizer
         model_id = "bert-base-uncased"
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='./cache/tokenizer')
+        # self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='./cache/tokenizer')
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='/data/huluhulu/fedbertlora/cache/tokenizer')
 
         # get pretrained model
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_id, num_labels=num_labels, cache_dir='./cache/model')
-
+        # self.model = AutoModelForSequenceClassification.from_pretrained(model_id, num_labels=num_labels, cache_dir='./cache/model')
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_id, num_labels=num_labels, cache_dir='/data/huluhulu/fedbertlora/cache/model')
         # Define LoRA Config
         lora_config = LoraConfig(
             r = rank,
@@ -48,11 +49,11 @@ class BertLora():
             # get lora parameters from query 
             for name, module in layer.attention.self.named_children():
                 if name == 'query':
-                    q_lora = [copy.deepcopy(module.lora_A['default'].weight), copy.deepcopy(module.lora_B['default'].weight)]
+                    q_lora = [module.lora_A['default'].weight.detach().clone(), module.lora_B['default'].weight.detach().clone()]
             # get lora parameters from value
             for name, module in layer.attention.self.named_children():
                 if name == 'value':
-                    v_lora = [copy.deepcopy(module.lora_A['default'].weight), copy.deepcopy(module.lora_B['default'].weight)]
+                    v_lora = [module.lora_A['default'].weight.detach().clone(), module.lora_B['default'].weight.detach().clone()]
             # append lora parameters to list
             if q_lora is not None and v_lora is not None:
                 lora_parameters.append([q_lora, v_lora])
@@ -68,8 +69,8 @@ class BertLora():
             for name, module in layer.attention.self.named_children():
                 if name == 'query':
                     # transforme tensor to parameter
-                    q_lora_A_weight = torch.nn.Parameter(q_lora[0].clone().detach())
-                    q_lora_B_weight = torch.nn.Parameter(q_lora[1].clone().detach())
+                    q_lora_A_weight = torch.nn.Parameter(q_lora[0].detach().clone())
+                    q_lora_B_weight = torch.nn.Parameter(q_lora[1].detach().clone())
                     # assign parameter to model's weight
                     module.lora_A['default'].weight = q_lora_A_weight
                     module.lora_B['default'].weight = q_lora_B_weight
@@ -77,8 +78,8 @@ class BertLora():
             for name, module in layer.attention.self.named_children():
                 if name == 'value':
                     # transforme tensor to parameter
-                    v_lora_A_weight = torch.nn.Parameter(v_lora[0].clone().detach())
-                    v_lora_B_weight = torch.nn.Parameter(v_lora[1].clone().detach())
+                    v_lora_A_weight = torch.nn.Parameter(v_lora[0].detach().clone())
+                    v_lora_B_weight = torch.nn.Parameter(v_lora[1].detach().clone())
                     # assign parameter to model's weight
                     module.lora_A['default'].weight = v_lora_A_weight
                     module.lora_B['default'].weight = v_lora_B_weight
