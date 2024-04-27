@@ -8,19 +8,16 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer
 from transformers import AutoModelForSequenceClassification
 from peft import LoraConfig, get_peft_model
-import copy
-import os
+from utils.helper import cache_path
 
 class BertLora():
     def __init__(self, num_labels, rank = 16, lora_alpha = 16, args = None):
         # Model id to load the tokenizer
         model_id = "bert-base-uncased"
-        # self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='./cache/tokenizer')
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='/data/huluhulu/fedbertlora/cache/tokenizer')
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir= cache_path + '/tokenizer')
 
         # get pretrained model
-        # self.model = AutoModelForSequenceClassification.from_pretrained(model_id, num_labels=num_labels, cache_dir='./cache/model')
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_id, num_labels=num_labels, cache_dir='/data/huluhulu/fedbertlora/cache/model')
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_id, num_labels=num_labels, cache_dir= cache_path + '/model')
         # Define LoRA Config
         lora_config = LoraConfig(
             r = rank,

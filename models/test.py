@@ -14,15 +14,18 @@ def test_(net_g, datatest, args):
     # testing
     test_loss = 0
     correct = 0
-    data_loader = DataLoader(DatasetSplit(datatest, [i for i in range(len(datatest))]), batch_size=args.bs, shuffle=False)
+    data_loader = DataLoader(DatasetSplit(datatest, args.dataset, [i for i in range(len(datatest))]), batch_size=args.bs, shuffle=False)
 
     correct_label, answer_label = set(), set()
     logits_list = []
-    for idx, (text, attention_mask, target) in enumerate(data_loader):
+    for idx, (input_ids, attention_mask, target) in enumerate(data_loader):
         if args.gpu != -1:
-            text, attention_mask, target = text.to(args.device), attention_mask.to(args.device),  target.to(args.device)
+            input_ids, attention_mask, target = input_ids.to(args.device), attention_mask.to(args.device),  target.to(args.device)
+        # if hasattr(torch.cuda, 'empty_cache'):
+        #     torch.cuda.empty_cache()
         with torch.no_grad():
-            logits = net_g(text, attention_mask=attention_mask).logits  # get logits
+            logits = net_g(input_ids, attention_mask=attention_mask).logits  # get logits
+            
             # sum up batch loss
             test_loss += F.cross_entropy(logits, target, reduction='sum').item()
             # get the index of the max log-probability
@@ -39,10 +42,6 @@ def test_(net_g, datatest, args):
     test_loss /= len(data_loader.dataset)
     accuracy = 100.0 * correct / len(data_loader.dataset)
     if args.verbose:
-        if correct == 40:
-            print('logits_list:', logits_list)
-            print('correct labels:', correct_label)
-            print('answer labels:', answer_label)
         print('\nTest set: Average loss: {:.4f} \tAccuracy: {}/{} ({:.2f}%)\n'.format(
             test_loss, correct, len(data_loader.dataset), accuracy))
     return accuracy, test_loss

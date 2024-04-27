@@ -5,30 +5,44 @@
 import torch
 from torch import nn, autograd
 from torch.utils.data import DataLoader, Dataset
-import numpy as np
-from sklearn import metrics
 from transformers import AutoTokenizer
+from utils.helper import cache_path
 
 # Model id to load the tokenizer
 model_id = "bert-base-uncased"
 # Load Tokenizer
-# tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='./cache/tokenizer')
-tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir='/data/huluhulu/fedbertlora/cache/tokenizer')
+tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir = cache_path + '/tokenizer')
+task_to_keys = {
+    "banking77": ("text", None),
+    "cola": ("sentence", None),
+    "mnli": ("premise", "hypothesis"),
+    "mrpc": ("sentence1", "sentence2"),
+    "qnli": ("question", "sentence"),
+    "qqp": ("question1", "question2"),
+    "rte": ("sentence1", "sentence2"),
+    "sst2": ("sentence", None),
+    "stsb": ("sentence1", "sentence2"),
+    "wnli": ("sentence1", "sentence2"),
+}
 
 class DatasetSplit(Dataset):
-    def __init__(self, dataset, idxs):
+    def __init__(self, dataset, task, idxs):
         self.dataset = dataset
+        self.task = task
         self.idxs = [int(idx) for idx in idxs]
 
     def __len__(self):
         return len(self.idxs)
 
     def __getitem__(self, item):
-        text, label = self.dataset[self.idxs[item]] ['text'] , self.dataset[self.idxs[item]]['label']
-        text_encoded = tokenizer(text, truncation=True, padding='max_length', return_tensors='pt')
+        if task_to_keys[self.task][1] is not None:
+            text_encoded = tokenizer(task_to_keys[self.task][0], task_to_keys[self.task][1],  truncation=True, padding='max_length', return_tensors='pt')
+        else:
+            text_encoded = tokenizer(task_to_keys[self.task][0], truncation=True, padding='max_length', return_tensors='pt')
+        
         input_ids = text_encoded['input_ids'].squeeze()
         attention_mask = text_encoded['attention_mask'].squeeze()
-        return input_ids, attention_mask, label
+        return input_ids, attention_mask, self.dataset[self.idxs[item]]['label']
 
 
 class LocalUpdate(object):
@@ -36,7 +50,7 @@ class LocalUpdate(object):
         self.args = args
         self.loss_func = nn.CrossEntropyLoss()
         self.selected_clients = []
-        self.ldr_train = DataLoader(DatasetSplit(dataset, idxs), batch_size=self.args.local_bs, shuffle=True)
+        self.ldr_train = DataLoader(DatasetSplit(dataset, self.args.dataset ,idxs), batch_size=self.args.local_bs, shuffle=True)
 
     def train(self, net):
         net.model.train()
@@ -52,12 +66,12 @@ class LocalUpdate(object):
 
             correct_label = set()
             answer_label = set()
-            for batch_idx, (text, attention_mask, label) in enumerate(self.ldr_train):
-                text, attention_mask, label = text.to(self.args.device), attention_mask.to(self.args.device), label.to(self.args.device)
+            for batch_idx, (input_ids, attention_mask, label) in enumerate(self.ldr_train):
+                input_ids, attention_mask, label = input_ids.to(self.args.device), attention_mask.to(self.args.device), label.to(self.args.device)
 
                 net.model.zero_grad()
 
-                logits = net.model(text, attention_mask=attention_mask).logits  # Get logits from model output
+                logits = net.model(input_ids, attention_mask=attention_mask).logits  # Get logits from model output
                 loss = self.loss_func(logits, label)
 
                 # deepcopy logits and label

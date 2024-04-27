@@ -21,7 +21,7 @@ def dataset_iid(dataset, num_users):
     return dict_users
 
 
-def dataset_noniid(dataset, num_users, num_shards=200):
+def dataset_noniid_shard(dataset, num_users, num_shards=200):
     """
     Sample non-I.I.D client data from dataset
         method: divide dataset into 'num_shards' parts and then assign each part to 'num_users' users 
@@ -61,5 +61,49 @@ def dataset_noniid(dataset, num_users, num_shards=200):
                 break
     return dict_users
 
+def dataset_noniid_dirichlet(dataset, num_users, alpha = 1.0):
+    """
+    Sample non-I.I.D client data from dataset
+        method: dirichlet distribute
+        
+    :param dataset:
+    :param num_users:
+    :return:
+    """
+    # index of user
+    dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
 
+    labels = np.array(dataset["label"])
+    num_label = len(labels)
+    idxs = np.arange(num_label)
 
+    # sort labels
+    idxs_labels = np.vstack((idxs, labels))
+    idxs_labels = idxs_labels[:,idxs_labels[1,:].argsort()]
+    idxs = idxs_labels[0,:]
+    
+    # get label type and the number of each type
+    idxs_begin = [0]
+    for i in range(num_label):
+        if i != 0 and idxs_labels[1,i] != idxs_labels[1,i-1]:
+            idxs_begin.append(i)
+    label_type, len_label = len(idxs_begin), [idxs_begin[i+1]-idxs_begin[i] for i in range(len(idxs_begin) - 1)]
+    len_label.append(num_label - idxs_begin[-1])
+    # print(idxs_begin)
+    # print(label_type, len_label)
+
+    # get dirichlet distribution
+    label_distribution = np.random.dirichlet([alpha] * num_users, label_type)
+    # print(label_distribution.shape) # (77,100)
+    
+    # assign label to users
+    for i in range(label_type):
+        for j in range(num_users):
+            # label i num
+            label_i_num = int(label_distribution[i][j] * len_label[i])
+            # get label
+            dict_users[j] = np.concatenate((dict_users[j], idxs[ idxs_begin[i] : idxs_begin[i] + label_i_num] ), axis=0)
+            # update idxs_begin
+            idxs_begin[i] += label_i_num
+
+    return dict_users

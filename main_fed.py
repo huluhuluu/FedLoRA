@@ -8,86 +8,51 @@ import matplotlib.pyplot as plt
 import copy
 import sys
 import numpy as np
-import torch
 
-from utils.sampling import dataset_iid, dataset_noniid
+from utils.helper import get_label_count_sample, get_label_count, cache_path
+from utils.sampling import dataset_iid, dataset_noniid_shard, dataset_noniid_dirichlet
 from utils.options import args_parser
 from utils import options
 from models.Update import LocalUpdate
 from models.Nets import BertLora
-from models.Fed import FedAVG, FedAvgInverse
+from models.Fed import FedAVG
 from models.Fed import FedSVD, FedABOptim
 from models.test import test_
 from datasets import load_dataset
 import torch.nn.modules
-# set full print
-torch.set_printoptions(profile="full")
+
 # References code
 # https://github.com/alexriggio/BERT-LoRA-TensorRT/tree/main/notebooks
 # https://github.com/philschmid/deep-learning-pytorch-huggingface/blob/main/training/pytorch-2-0-bert-text-classification.ipynb
 
-# get label counts
-def get_label_count(dataset_train, dataset_test):
-    # get label counts
-    label_counts_train = {}
-    label_counts_test = {}
-
-    # traverse all train data
-    for i in range(len(dataset_train)):
-        if label_counts_train.get(dataset_train[i]['label']) is None:
-            label_counts_train[dataset_train[i]['label']] = 1
-        else:
-            label_counts_train[dataset_train[i]['label']] += 1
-    
-    # traverse all test data
-    for i in range(len(dataset_test)):
-        if label_counts_test.get(dataset_test[i]['label']) is None:
-            label_counts_test[dataset_test[i]['label']] = 1
-        else:
-            label_counts_test[dataset_test[i]['label']] += 1
-    
-
-    # print label counts res
-    for key in label_counts_train.keys():
-        print('label: {},train count: {} test count: {}'.format(
-            key, 
-            label_counts_train[key], 
-            label_counts_test[key] if label_counts_test.get(key) is not None else 0))
-
-# get label counts after sampling
-# dataset: dataset_train
-# users: sampled index for users
-def get_label_count_sample(dataset, users, verbose = True):
-    label_counts = {}
-    users = list(users)
-    for i in range(len(users)):
-        ind = int(users[i])
-        if label_counts.get(dataset[ind]['label']) is None:
-            label_counts[dataset[ind]['label']] = 1
-        else:
-            label_counts[dataset[ind]['label']] += 1
-    
-    sum_label_count = 0
-    for key in label_counts.keys():
-        if verbose:
-            print('label: {}, count: {}'.format(key, label_counts[key]))
-        sum_label_count += 1
-    print('label num: {}, data num {}'.format(sum_label_count, len(users)))
 
 if __name__ == '__main__':
     # parse args
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    # Dataset id from huggingface.co/dataset
-    dataset_id = "PolyAI/banking77" 
-
+    # Dataset from huggingface.co/dataset
     # get data from huggingface.co/dataset
-    # raw_dataset = load_dataset(dataset_id, cache_dir='./cache/data')
-    raw_dataset = load_dataset(dataset_id, cache_dir='/data/huluhulu/fedbertlora/cache/data')
+    if args.dataset == 'banking77':
+        raw_dataset = load_dataset("PolyAI/banking77", cache_dir = cache_path + '/data')
+    else:
+        # glue sub-dataset
+        raw_dataset = load_dataset("nyu-mll/glue", args.dataset, cache_dir = cache_path + '/data')
+    
+    print(raw_dataset)
+    # banking77 ['text', 'label', 'idx']
+    # rte ['sentence1', 'sentence2', 'label', 'idx']
+    # mrpc ['sentence1', 'sentence2', 'label', 'idx']
+    # sst2 ['sentence', 'label', 'idx']
+    # qnli ['question', 'sentence', 'label', 'idx']
+    # qqp ['question1', 'question2', 'label', 'idx']
 
     dataset_train = raw_dataset['train']
-    dataset_test = raw_dataset['test']
+    if args.dataset == 'banking77':
+        dataset_test = raw_dataset['test']
+    else:
+        dataset_test = raw_dataset['validation']
+    
     labels = dataset_train.features["label"].names
     # print(len(dataset_train), len(dataset_test)) # 10003 3080
     # get_label_count(dataset_train, dataset_test)
@@ -96,11 +61,14 @@ if __name__ == '__main__':
     dataset_train = dataset_train.shuffle(seed=42)
     if args.iid:
         dict_users = dataset_iid(dataset_train, args.num_users)
-    else:
-        dict_users = dataset_noniid(dataset_train, args.num_users)
+    elif args.shard_noniid:
+        dict_users = dataset_noniid_shard(dataset_train, args.num_users)
+    elif args.dirichlet_noniid:
+        dict_users = dataset_noniid_dirichlet(dataset_train, args.num_users, args.alpha)
     
     # get_label_count_sample(dataset_train, dict_users[0])
-    # non iid: label num:3
+    # print('---------------------------------')
+    # get_label_count_sample(dataset_train, dict_users[1])
     
     # build model
     net_glob = BertLora(num_labels = len(labels), rank=args.lora_rank, args = args)
@@ -116,6 +84,7 @@ if __name__ == '__main__':
     acc_train, acc_test = [], []
 
     for iter in range(args.epochs):
+        print('--------------------------------------')
         # train
         loss_locals, acc_locals = [], []
         lora_locals = []
@@ -123,18 +92,23 @@ if __name__ == '__main__':
         # num of selected users and selected users
         m = max(int(args.frac * args.num_users), 1) 
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
-
+        idx_ = 0
         # train using the local dataset
         for idx in idxs_users:
+            if len(dict_users[idx]) == 0: # skip empty user
+                print('Round {:3d} User{:d} {:3d} is empty and skiped'.format(iter, idx_, idx))
+                continue
+            
+            if args.verbose:
+                # print iter and idx
+                print('Round {:3d}, User{:d} {:3d}'.format(iter, idx_, idx))
+                get_label_count_sample(dataset_train, dict_users[idx], verbose = False)
+            idx_ += 1
+
             # use global lora parameters
             net_glob.put_lora_parameters(lora_glob)
 
             local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx])
-            if args.verbose:
-                # print iter and idx
-                print('\nRound {:3d}, User {:3d}'.format(iter, idx))
-                get_label_count_sample(dataset_train, dict_users[idx], verbose = False)
-            
             lora, loss, acc = local.train(net = net_glob)
 
             lora_locals.append(copy.deepcopy(lora))
@@ -173,11 +147,12 @@ if __name__ == '__main__':
                   format(iter,loss_avg, acc_avg, acc_test_local))
     
     # path
-    path_name = './save/{path}/fed_{epochs}_C{frac}_iid{iid}_localep{local_ep}{rank}{method}'.format(
+    path_name = './save/{path}/{dataset}_{epochs}_C{frac}_{iid}_localep{local_ep}{rank}{method}'.format(
                     path = args.reduce_method,
+                    dataset = args.dataset,
                     epochs = args.epochs,
                     frac = args.frac,
-                    iid = args.iid,
+                    iid = 'iid' if args.iid else ('noniid_dirichlet' if args.shard_noniid else 'noniid_shard'),
                     local_ep = args.local_ep,
                     rank = '_rank{}'.format(args.lora_rank) if args.autorank == False or args.reduce_method != options.FedSVD else '_autorank',
                     method = '_{}'.format(args.reduce_method)

@@ -4,9 +4,9 @@
 
 import argparse
 
-FedAvg = "fedavg"
-FedSVD = "fedsvd"
-FedABOptim = "fedaboptim"
+FedAvg, FedSVD, FedABOptim = "fedavg", "fedsvd", "fedaboptim"
+BANKING77, RTE, MRPC, SST2, QNLI, QQP, MNLI, COLA, STSB, WNLI = "banking77", "rte", "mrpc", "sst2", "qnli", "qqp", "mnli", "cola", "stsb", "wnli"
+
 
 def args_parser():
     parser = argparse.ArgumentParser()
@@ -20,13 +20,17 @@ def args_parser():
     parser.add_argument('--lr', type=float, default=0.01, help="learning rate")
     parser.add_argument('--momentum', type=float, default=0.5, help="SGD momentum (default: 0.5)")
     parser.add_argument('--split', type=str, default='user', help="train-test split type, user or sample")
-    parser.add_argument('--reduce_method', type=str, default=FedAvg, choices=[FedAvg, FedSVD, FedABOptim], help="method to reduce A and B")
+    parser.add_argument('--reduce_method', type=str, default=FedAvg, choices=[FedAvg, FedSVD, FedABOptim], help="method to reduce A and B, choose from fedavg, fedsvd, fedaboptim")
     parser.add_argument('--interval', type=int, default=10, help="loss and accuracy curve will be plotted every (interval) rounds")
 
     # other arguments
-    parser.add_argument('--dataset', type=str, default='mnist', help="name of dataset")
-    parser.add_argument('--iid', action='store_true', help='whether i.i.d or not')
-    parser.add_argument('--autorank', action='store_true', help='whether use svd singular value guide rank or not')
+    parser.add_argument('--dataset', type=str, default=BANKING77, choices=[BANKING77, RTE, MRPC, SST2, QNLI, QQP, COLA, WNLI], help='name of dataset, choose from banking77, rte, mrpc, sst2, qnli, qqp, cola, wnli')
+    parser.add_argument('--iid', action='store_true', help='i.i.d')
+    parser.add_argument('--shard_noniid', action='store_true', help='shard_noniid')
+    parser.add_argument('--dirichlet_noniid', action='store_true', help='dirichlet_noniid')
+    parser.add_argument('--alpha', type=float, default=1.0, help='alpha of dirichlet distribution')
+
+    parser.add_argument('--autorank', action='store_true', help='use svd singular value guide rank or not')
     parser.add_argument('--theta', type=float, default=0.98, help='theta of svd singular value sum')
     parser.add_argument('--gpu', type=int, default=0, help="GPU ID, -1 for CPU")
     parser.add_argument('--verbose', action='store_true', help='verbose print')

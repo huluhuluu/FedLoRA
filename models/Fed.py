@@ -65,78 +65,6 @@ def FedAVG(lora, args):
 
     return lora_avg, A_avg, B_avg, W_avg, loss_list
 
-
-
-def FedAvgInverse(lora, args, r = 8, pad_val = 0.001):
-    # get avg A value, B value and average A*B value
-    lora_avg, A_avg, B_avg, W_avg = FedAVG(lora,args)
-    
-    # padding A_avg to (n, n)
-    # 1. get rank of A_avg
-    # 2. if(rank < r) add padding row to  A_avg from row 'rank' to row 'r'
-    # 3. padding A_avg to (n, n), from row r to row n
-    # padding method: row j padding [0, 0 , 0 , ..., pad_val, ... ] (pad_val in the j-th row)
-    
-    # 1. get rank of A_avg
-    A_rank = []
-    W_rank = []
-    for j in range(len(A_avg)):
-        A_rank.append([torch.linalg.matrix_rank(A_avg[j][0]), torch.linalg.matrix_rank(A_avg[j][1])])
-        W_rank.append([torch.linalg.matrix_rank(W_avg[j][0]), torch.linalg.matrix_rank(W_avg[j][1])])
-    
-    # print rank
-    if args.verbose:
-        print("A_rank:", A_rank)
-        print("W_rank:", W_rank)
-    
-    # 2. if(rank < r) add padding row to  A_avg from row 'rank' to row 'r'
-    for layer_ind, layer in enumerate(A_avg): # traverse all layers
-        for qv_ind, qv in enumerate(layer): # traverse all modules
-            if A_rank[layer_ind][qv_ind] < r:   
-                rank = A_rank[layer_ind][qv_ind]
-                padding = torch.zeros_like(qv)
-                # actually row: [rank-1, r-1]
-                for row in range(rank, r):
-                    padding[row, row] = pad_val
-                # print(qv.shape) # 8 * 768
-                A_avg[layer_ind][qv_ind] = torch.add(qv, padding)               
-    
-    # 3. padding A_avg to (n, n), from row r to row n
-    #    and compute B_avg
-    # set print full
-    for layer_ind, layer in enumerate(B_avg): # traverse all layers
-        for qv_ind, qv in enumerate(layer): # traverse all modules
-            # padding A_avg to (n, n), from row r to row n
-            new_A = torch.zeros_like(W_avg[layer_ind][qv_ind])
-            W = W_avg[layer_ind][qv_ind].detach().clone()
-            loss1 = 0
-            # add A_avg to new_A
-            for i in range(new_A.shape[0]):
-                for j in range(new_A.shape[1]):
-                    if i < A_avg[layer_ind][qv_ind].shape[0] and j < A_avg[layer_ind][qv_ind].shape[1]:
-                        new_A[i, j] = A_avg[layer_ind][qv_ind][i, j]
-                    elif i == j:
-                        new_A[i, j] = pad_val
-                        # compute loss w[i,j]^2
-                        loss1 += W[i, j] ** 2
-                        W[i, j] = 0
-            # print(new_A.shape) # 768 * 768
-            # compute B_avg
-            # W_avg = B_avg * A_avg
-            # B_avg = W_avg * A_avg^(-1)
-            # truncate B_avg to (n, r)
-            # full
-    
-            B_avg[layer_ind][qv_ind] = torch.mm(W, torch.linalg.inv(new_A))[:,:A_avg[layer_ind][qv_ind].shape[0]]
-    # 4. compute loss and get lora_avg
-    loss = 0
-    for layer_ind, layer in enumerate(lora_avg):
-        for qv_ind, qv in enumerate(layer):
-            lora_avg[layer_ind][qv_ind] = [A_avg[layer_ind][qv_ind].detach().clone(), B_avg[layer_ind][qv_ind].detach().clone()]
-            loss += torch.norm(W_avg[layer_ind][qv_ind] - torch.mm(B_avg[layer_ind][qv_ind], A_avg[layer_ind][qv_ind]))
-    print(f"avg inverse loss: {loss:.10f}, analyse loss: {loss1:.10f}")
-    return lora_avg
-
 def analyse_svd(W, U, S, V):
     # resolve file path conflicts
     png_path = 'save/analyse/svd.png'
@@ -241,7 +169,6 @@ def SVD(W, r: int, args):
 
     return A, B, loss, r
 
-
 def FedSVD(lora, r: int, args):
     _, _, _, _, loss_avg = FedAVG(lora, args)
     print('fedavg loss list:', loss_avg)
@@ -299,7 +226,6 @@ def FedSVD(lora, r: int, args):
     print(f"avg rank: {rank}")
     return result
 
-
 def FedABOptimHandler(W, A, B):
     # 定义优化器
     W = W.clone().detach()
@@ -327,7 +253,6 @@ def FedABOptimHandler(W, A, B):
     # 检查最终的 A 和 B
     print(f'Final Loss: {loss.item():.10f}')
     return A, B
-
 
 def FedABOptim(lora):
     # 1. W_{i} = B_{i}A_{i}
