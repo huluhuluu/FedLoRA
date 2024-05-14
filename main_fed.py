@@ -31,7 +31,6 @@ if __name__ == '__main__':
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    # Dataset from huggingface.co/dataset
     # get data from huggingface.co/dataset
     if args.dataset == 'banking77':
         raw_dataset = load_dataset("PolyAI/banking77", cache_dir = cache_path + '/data')
@@ -40,13 +39,7 @@ if __name__ == '__main__':
         raw_dataset = load_dataset("nyu-mll/glue", args.dataset, cache_dir = cache_path + '/data')
     
     print(raw_dataset)
-    # banking77 ['text', 'label', 'idx']
-    # rte ['sentence1', 'sentence2', 'label', 'idx']
-    # mrpc ['sentence1', 'sentence2', 'label', 'idx']
-    # sst2 ['sentence', 'label', 'idx']
-    # qnli ['question', 'sentence', 'label', 'idx']
-    # qqp ['question1', 'question2', 'label', 'idx']
-
+    
     dataset_train = raw_dataset['train']
     if args.dataset == 'banking77':
         dataset_test = raw_dataset['test']
@@ -65,6 +58,8 @@ if __name__ == '__main__':
         dict_users = dataset_noniid_shard(dataset_train, args.num_users)
     elif args.dirichlet_noniid:
         dict_users = dataset_noniid_dirichlet(dataset_train, args.num_users, args.alpha)
+    else: # default iid 
+        dict_users = dataset_iid(dataset_train, args.num_users)
     
     # get_label_count_sample(dataset_train, dict_users[0])
     # print('---------------------------------')
@@ -73,11 +68,13 @@ if __name__ == '__main__':
     # build model
     net_glob = BertLora(num_labels = len(labels), rank=args.lora_rank, args = args)
     # print(net_glob.model)
-   
+    # print(len(net_glob.name_lora_para))
+    
     # copy A,B weights
     lora_glob = net_glob.get_lora_parameters()
-    # print(lora_glob[0][0][0].shape) # q_lora_A
-    # print(lora_glob[0][0][1].shape) # q_lora_B
+    # print(len(lora_glob)) # 12
+    # print(lora_glob[0][0][0].shape) # q_lora_A torch.Size([8, 768])
+    # print(lora_glob[0][0][1].shape) # q_lora_B torch.Size([768, 8])
     
     # training
     loss_train, loss_test = [], []
@@ -94,11 +91,12 @@ if __name__ == '__main__':
         idxs_users = np.random.choice(range(args.num_users), m, replace=False)
         idx_ = 0
         # train using the local dataset
+        num_ = []
         for idx in idxs_users:
             if len(dict_users[idx]) == 0: # skip empty user
                 print('Round {:3d} User{:d} {:3d} is empty and skiped'.format(iter, idx_, idx))
                 continue
-            
+            num_.append(len(dict_users[idx]))
             if args.verbose:
                 # print iter and idx
                 print('Round {:3d}, User{:d} {:3d}'.format(iter, idx_, idx))
@@ -109,8 +107,21 @@ if __name__ == '__main__':
             net_glob.put_lora_parameters(lora_glob)
 
             local = LocalUpdate(args=args, dataset=dataset_train, idxs=dict_users[idx])
-            lora, loss, acc = local.train(net = net_glob)
-
+            lora, loss, acc, fail_flag = local.train(net = net_glob)
+            # judge errors beteween lora and lora_glob
+            # ||lora - lora_glob|| (12, 2)
+            loss_lora = []
+            for layer_ind in range(len(lora)): # traverse all layers
+                for qv_ind in range(len(lora[layer_ind])): # traverse query and value
+                    for ab_index in range(len(lora[layer_ind][qv_ind])):
+                        loss_lora.append(torch.norm(lora[layer_ind][qv_ind][ab_index] - lora_glob[layer_ind][qv_ind][ab_index]).item())
+            
+            print('lora para loss:', loss_lora)
+            print('sum lora para loss:', sum(loss_lora))
+            
+            if fail_flag:
+                print('invalid local model, skip this user')
+                continue
             lora_locals.append(copy.deepcopy(lora))
             loss_locals.append(copy.deepcopy(loss))
             acc_locals.append(copy.deepcopy(acc))
@@ -119,12 +130,9 @@ if __name__ == '__main__':
         if args.reduce_method == options.FedAvg:
             lora_glob, _, _, _, _ = FedAVG(lora_locals, args)
         elif args.reduce_method == options.FedSVD:
-            lora_glob = FedSVD(lora_locals, args.lora_rank, args)
+            lora_glob = FedSVD(lora_locals, args.lora_rank, args, num_)
         elif args.reduce_method == options.FedABOptim:
             lora_glob = FedABOptim(lora_locals)
-
-        # copy weight to net_glob
-        net_glob.put_lora_parameters(lora_glob)
         
         # compute loss and accuracy every args.interval rounds
         if iter % args.interval == 0:
@@ -147,12 +155,13 @@ if __name__ == '__main__':
                   format(iter,loss_avg, acc_avg, acc_test_local))
     
     # path
-    path_name = './save/{path}/{dataset}_{epochs}_C{frac}_{iid}_localep{local_ep}{rank}{method}'.format(
+    path_name = './save/{path}/{model}_{dataset}_epoch{epochs}_C{frac}_{iid}_localep{local_ep}{rank}{method}'.format(
+                    model = args.model,
                     path = args.reduce_method,
                     dataset = args.dataset,
                     epochs = args.epochs,
                     frac = args.frac,
-                    iid = 'iid' if args.iid else ('noniid_dirichlet' if args.shard_noniid else 'noniid_shard'),
+                    iid = 'iid' if args.iid else ('noniid_dirichlet' if not args.shard_noniid else 'noniid_shard'),
                     local_ep = args.local_ep,
                     rank = '_rank{}'.format(args.lora_rank) if args.autorank == False or args.reduce_method != options.FedSVD else '_autorank',
                     method = '_{}'.format(args.reduce_method)

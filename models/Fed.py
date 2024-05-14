@@ -169,13 +169,14 @@ def SVD(W, r: int, args):
 
     return A, B, loss, r
 
-def FedSVD(lora, r: int, args):
+def FedSVD(lora, r: int, args, num_ : list):
     _, _, _, _, loss_avg = FedAVG(lora, args)
     print('fedavg loss list:', loss_avg)
     # 1. W_{i} = B_{i}A_{i}
     # 2. W = avg(W_{i})
     # 3. A, B = SVD(W, r)
-
+    sum_ = sum(num_)
+    
     layer_weight_list = []
     # initialize
     # get weight shape
@@ -193,11 +194,12 @@ def FedSVD(lora, r: int, args):
             ]
         )
 
-    for client in lora:
+    for client_index, client in enumerate(lora):
+        client_weight = num_[client_index] * 1.0 / sum_
         for layer_index, layer in enumerate(client):
-            layer_weight_list[layer_index][0] += torch.mm(
+            layer_weight_list[layer_index][0] +=  torch.mm(
                 layer[0][1], layer[0][0])
-            layer_weight_list[layer_index][1] += torch.mm(
+            layer_weight_list[layer_index][1] +=  torch.mm(
                 layer[1][1], layer[1][0])
 
     # avg

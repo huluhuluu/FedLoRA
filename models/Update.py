@@ -8,10 +8,8 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
 from utils.helper import cache_path
 
-# Model id to load the tokenizer
-model_id = "bert-base-uncased"
 # Load Tokenizer
-tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir = cache_path + '/tokenizer')
+tokenizer = None
 task_to_keys = {
     "banking77": ("text", None),
     "cola": ("sentence", None),
@@ -35,10 +33,11 @@ class DatasetSplit(Dataset):
         return len(self.idxs)
 
     def __getitem__(self, item):
+        global tokenizer, task_to_keys
         if task_to_keys[self.task][1] is not None:
-            text_encoded = tokenizer(task_to_keys[self.task][0], task_to_keys[self.task][1],  truncation=True, padding='max_length', return_tensors='pt')
+            text_encoded = tokenizer(self.dataset[self.idxs[item]][task_to_keys[self.task][0]], self.dataset[self.idxs[item]][task_to_keys[self.task][1]],  truncation=True, padding='max_length', return_tensors='pt')
         else:
-            text_encoded = tokenizer(task_to_keys[self.task][0], truncation=True, padding='max_length', return_tensors='pt')
+            text_encoded = tokenizer(self.dataset[self.idxs[item]][task_to_keys[self.task][0]], truncation=True, padding='max_length', return_tensors='pt')
         
         input_ids = text_encoded['input_ids'].squeeze()
         attention_mask = text_encoded['attention_mask'].squeeze()
@@ -50,6 +49,10 @@ class LocalUpdate(object):
         self.args = args
         self.loss_func = nn.CrossEntropyLoss()
         self.selected_clients = []
+
+        global tokenizer
+        if tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir = cache_path + '/tokenizer')
         self.ldr_train = DataLoader(DatasetSplit(dataset, self.args.dataset ,idxs), batch_size=self.args.local_bs, shuffle=True)
 
     def train(self, net):
@@ -57,6 +60,8 @@ class LocalUpdate(object):
         net.model.to(self.args.device)
         # train and update
         optimizer = torch.optim.SGD(net.model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
+        # adam eps = 1e-8
+        # optimizer = torch.optim.Adam(net.model.parameters(), lr=self.args.lr, eps=1e-8)
         
         epoch_loss = []
         acc_ = [0 for i in range(self.args.local_ep)]
@@ -96,5 +101,5 @@ class LocalUpdate(object):
                 print('Update Epoch: {} \tAverage Loss: {:.6f}\tAccuracy: {:.2f}%'.format(
                     iter, sum(batch_loss) / len(batch_loss), 100. * correct / len(self.ldr_train.dataset)))
             epoch_loss.append(sum(batch_loss)/len(batch_loss))
-        return net.get_lora_parameters(), sum(epoch_loss) / len(epoch_loss), acc_[-1]
+        return net.get_lora_parameters(), sum(epoch_loss) / len(epoch_loss), acc_[-1], epoch_loss[-1] > epoch_loss[0] * 1.1
 
