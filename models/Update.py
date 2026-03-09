@@ -6,10 +6,11 @@ import torch
 from torch import nn, autograd
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
-from utils.helper import cache_path
 
-# Load Tokenizer
+# Global tokenizer (shared across workers)
 tokenizer = None
+
+# Task-specific text field names
 task_to_keys = {
     "banking77": ("text", None),
     "cola": ("sentence", None),
@@ -18,33 +19,53 @@ task_to_keys = {
     "qnli": ("question", "sentence"),
     "qqp": ("question1", "question2"),
     "rte": ("sentence1", "sentence2"),
-    # "sst2": ("sentence", None),
     "sst2": ("text", None),
     "stsb": ("sentence1", "sentence2"),
     "wnli": ("sentence1", "sentence2"),
-    "20news": ("text", None),
     "agnews": ("text", None),
 }
 
+
 class DatasetSplit(Dataset):
-    def __init__(self, dataset, task, idxs):
+    def __init__(self, dataset, task, idxs, seq_len=128):
         self.dataset = dataset
         self.task = task
         self.idxs = [int(idx) for idx in idxs]
+        self.seq_len = seq_len
 
     def __len__(self):
         return len(self.idxs)
 
     def __getitem__(self, item):
         global tokenizer, task_to_keys
+        
+        text_key = task_to_keys[self.task][0]
+        text = self.dataset[self.idxs[item]][text_key]
+        
+        # Handle pair tasks (e.g., MNLI, MRPC)
         if task_to_keys[self.task][1] is not None:
-            text_encoded = tokenizer(self.dataset[self.idxs[item]][task_to_keys[self.task][0]], self.dataset[self.idxs[item]][task_to_keys[self.task][1]],  truncation=True, padding='max_length', return_tensors='pt')
+            text_pair = self.dataset[self.idxs[item]][task_to_keys[self.task][1]]
+            text_encoded = tokenizer(
+                text, text_pair,
+                truncation=True,
+                padding='max_length',
+                max_length=self.seq_len,
+                return_tensors='pt'
+            )
         else:
-            text_encoded = tokenizer(self.dataset[self.idxs[item]][task_to_keys[self.task][0]], truncation=True, padding='max_length', return_tensors='pt')
+            text_encoded = tokenizer(
+                text,
+                truncation=True,
+                padding='max_length',
+                max_length=self.seq_len,
+                return_tensors='pt'
+            )
         
         input_ids = text_encoded['input_ids'].squeeze()
         attention_mask = text_encoded['attention_mask'].squeeze()
-        return input_ids, attention_mask, self.dataset[self.idxs[item]]['label']
+        label = self.dataset[self.idxs[item]]['label']
+        
+        return input_ids, attention_mask, label
 
 
 class LocalUpdate(object):
@@ -55,15 +76,22 @@ class LocalUpdate(object):
 
         global tokenizer
         if tokenizer is None:
-            tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir = cache_path + '/tokenizer')
-        self.ldr_train = DataLoader(DatasetSplit(dataset, self.args.dataset ,idxs), batch_size=self.args.local_bs, shuffle=True)
+            tokenizer = AutoTokenizer.from_pretrained(args.model)
+            # Ensure pad token exists
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+        
+        self.ldr_train = DataLoader(
+            DatasetSplit(dataset, self.args.task, idxs, seq_len=args.seq_len),
+            batch_size=self.args.local_bs,
+            shuffle=True
+        )
 
     def train(self, net, printflag = False):
         net.model.train()
         net.model.to(self.args.device)
         # train and update
         optimizer = torch.optim.SGD(net.model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        # adam eps = 1e-8
         # optimizer = torch.optim.Adam(net.model.parameters(), lr=self.args.lr, eps=1e-8)
         
         epoch_loss = []
@@ -99,11 +127,6 @@ class LocalUpdate(object):
             # add accuracy to acc_
             acc_[iter] = correct / len(self.ldr_train.dataset)
 
-            # show gradient's f norm
-            if iter == 0 and printflag:
-                for name, param in net.model.named_parameters():
-                    if param.requires_grad:
-                        print(name, torch.linalg.norm(param.grad, ord='fro'))
             if self.args.verbose:
                 # print('correct labels:', correct_label)
                 # print('answer labels:', answer_label)

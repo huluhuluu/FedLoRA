@@ -5,7 +5,6 @@
 import argparse
 
 FedAvg, FedSVD, FedABOptim = "fedavg", "fedsvd", "fedaboptim"
-BANKING77, RTE, MRPC, SST2, QNLI, QQP, MNLI, COLA, STSB, WNLI, AGNEWS = "banking77", "rte", "mrpc", "sst2", "qnli", "qqp", "mnli", "cola", "stsb", "wnli", "agnews"
 GAUSS, ACA, SVD, LORAGA, PISSA, EVA, OLORA, KAMING = "gaussian", "aca", "svd", "loraga", "pissa", 'eva', 'olora', 'kaming'
 
 def args_parser():
@@ -25,8 +24,9 @@ def args_parser():
     parser.add_argument('--interval', type=int, default=1, help="loss and accuracy curve will be plotted every (interval) rounds")
     
     # other arguments
-    parser.add_argument('--dataset', type=str, default=BANKING77, choices=[BANKING77, RTE, MRPC, SST2, QNLI, QQP, COLA, WNLI, AGNEWS], help='name of dataset, choose from banking77, rte, mrpc, sst2, qnli, qqp, cola, wnli')
-    parser.add_argument('--model', type=str, default='bert-base-uncased', help='model id')
+    parser.add_argument('--dataset', type=str, default='./data/banking77', help='path to dataset directory')
+    parser.add_argument('--model', type=str, default='./models/bert-base-uncased', help='path to pretrained model directory')
+    parser.add_argument('--task', type=str, default='banking77', help='task name for dataset (e.g., banking77, agnews, sst2, mnli)')
     parser.add_argument('--iid', action='store_true', help='i.i.d')
     parser.add_argument('--shard_noniid', action='store_true', help='shard_noniid')
     parser.add_argument('--dirichlet_noniid', action='store_true', help='dirichlet_noniid')
@@ -40,5 +40,9 @@ def args_parser():
 
     # lora arguments
     parser.add_argument('--lora_rank', type=int, default=8, help='rank of lora (default: 8)')
+    
+    # sequence length
+    parser.add_argument('--seq_len', type=int, default=512, help='max sequence length for tokenizer (default: 512)')
+    
     args = parser.parse_args()
     return args

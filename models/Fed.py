@@ -15,7 +15,21 @@ import os
 # the lora parameters' shape is (client_num, layer_num, 2, 2, lora_size)
 # in this function we average the lora parameters of all clients
 # get average of matrix A, B, W(AB)
-def FedAVG(lora, args):
+def FedAVG(lora):
+    """
+    Federated averaging of LoRA parameters.
+    
+    Args:
+        lora: list of client LoRA parameters, each client has shape (layer_num, 2, 2)
+              where 2 is for (query, value) and (A, B) matrices
+    
+    Returns:
+        lora_avg: averaged LoRA parameters
+        A_avg: averaged A matrices
+        B_avg: averaged B matrices
+        W_avg: averaged W = B * A matrices
+        loss_list: reconstruction loss for each layer
+    """
     # get avg A value, B value and average A*B value
     # A_avg = [ [q_lora_a, v_lora_a], ...]      # different layers
     # B_avg = [ [q_lora_b, v_lora_b], ...]      # different layers
@@ -65,18 +79,20 @@ def FedAVG(lora, args):
 
     return lora_avg, A_avg, B_avg, W_avg, loss_list
 
-# lora = [ [[(q_lora_a, q_lora_b), (v_lora_a, v_lora_b)], ...]      # client 0
-#          [[(q_lora_a, q_lora_b), (v_lora_a, v_lora_b)], ...]      # client 1
-#          [[(q_lora_a, q_lora_b), (v_lora_a, v_lora_b)], ...]      # client 2
-#                                                         ...]      # client n
-# the lora parameters' shape is (client_num, layer_num, 2, 2, lora_size)
-# in this function we average the lora parameters of all clients
-# use loraga method to init lora parameters
-def LoraGA(lora, lora_glob, args):
-    # get avg A value, B value and average A*B value
-    # A_avg = [ [q_lora_a, v_lora_a], ...]      # different layers
-    # B_avg = [ [q_lora_b, v_lora_b], ...]      # different layers
-    # W_avg = [ [q_lora_b * q_lora_b, v_lora_a * v_lora_b], ...]      # different layers
+
+def LoraGA(lora, lora_glob, lr, lora_rank):
+    """
+    Initialize LoRA parameters using LoraGA method.
+    
+    Args:
+        lora: list of client LoRA parameters
+        lora_glob: global LoRA parameters
+        lr: learning rate used in local training
+        lora_rank: rank of LoRA
+    
+    Returns:
+        res: initialized LoRA parameters
+    """
     dW, NW_avg = [], []
 
     # init W_avg
@@ -100,8 +116,8 @@ def LoraGA(lora, lora_glob, args):
         # layer: [ [(q_lora_a, q_lora_b)], [(v_lora_a, v_lora_b)] ]
         # NW_avg[layer_ind]: [ [W_q, W_v], ...]
         dW.append([
-                    torch.div(torch.sub(torch.mm(layer[0][1], layer[0][0]), NW_avg[layer_ind][0]), args.lr),
-                    torch.div(torch.sub(torch.mm(layer[1][1], layer[1][0]), NW_avg[layer_ind][1]), args.lr)
+                    torch.div(torch.sub(torch.mm(layer[0][1], layer[0][0]), NW_avg[layer_ind][0]), lr),
+                    torch.div(torch.sub(torch.mm(layer[1][1], layer[1][0]), NW_avg[layer_ind][1]), lr)
                 ])
 
     # init lora parameters with LoraGA method
@@ -112,7 +128,7 @@ def LoraGA(lora, lora_glob, args):
         for qv_ind, qv in enumerate(layer):
             # qv: dW_q / dW_v        
             U, S, V = torch.linalg.svd(qv, full_matrices=False)
-            d_out, r, gamma = qv.shape[0], args.lora_rank, 16
+            d_out, r, gamma = qv.shape[0], lora_rank, 16
 
             # reconstruct B and A
             B =  U[:, r:2*r] * (d_out ** (1/4.0)) / (gamma ** (1/2.0))
@@ -122,94 +138,32 @@ def LoraGA(lora, lora_glob, args):
 
     return res
 
-def analyse_svd(W, U, S, V):
-    # resolve file path conflicts
-    png_path = 'save/analyse/svd.png'
-    txt_path = 'save/analyse/svd.txt'
-    # if exists, add a number to the file name
-    if os.path.exists(png_path):
-        index = 1
-        while index < 5:
-            new_png_path = f'save/analyse/svd_{index}.png'
-            new_txt_path = f'save/analyse/svd_{index}.txt'
-            if not os.path.exists(new_png_path):
-                png_path = new_png_path
-                txt_path = new_txt_path
-                break
-            index += 1
-        if index == 5:
-            return
-    # statistics
-    errors, ratios, s = [], [], []
-    singular_val_sum = 0
-    for rank in range(1, W.shape[0]//5 + 1):
-        # decompose W
-        B = U[:, :rank] * torch.sqrt(S[:rank])
-        A = torch.sqrt(S[:rank]).unsqueeze(1) * V[:rank, :]
-        W_approx = torch.mm(B, A)
-        # compute loss
-        loss = torch.norm(W - W_approx)
-        # compute singular value sum
-        singular_val_sum += S[rank].item()
-
-        errors.append(loss.item())
-        ratios.append(singular_val_sum)
-        s.append(S[rank].item())
-    # plot
-    plt.figure(figsize=(15, 5))
+def SVD(W, r, autorank=False, theta=0.98):
+    """
+    Reconstruct matrix W = B * A using SVD decomposition.
     
-    # fig1
-    plt.subplot(2, 2, 1)
-    plt.plot(range(len(errors)), errors)
-    plt.title('Reconstruction Error')
-    plt.xlabel('r')
-    plt.ylabel('Error')
-    # fig2
-    plt.subplot(2, 2, 2)
-    ratios = [ s_ / singular_val_sum for s_ in ratios ]
-    plt.plot(range(len(ratios)), ratios)
-    plt.title('Singular Values Ratio')
-    plt.xlabel('r')
-    plt.ylabel('Ratio')
-    # fig 3
-    plt.subplot(2, 2, 3)
-    plt.plot(range(len(s)), s)
-    plt.title('Singular Values')
-    plt.xlabel('Index')
-    plt.ylabel('Value')
-    # fig4
-    plt.subplot(2, 2, 4)
-    plt.plot(range(len(errors)), errors, label='Errors')
-    plt.plot(range(len(ratios)), ratios, label='Ratios')
-    plt.plot(range(len(s)), s, label='Singular Values')
-    plt.title('Combined Plot')
-    plt.xlabel('Index')
-    plt.ylabel('Value')
-    plt.legend()
-
-    plt.savefig(png_path)
-    # save to txt
-    with open(txt_path, 'w') as f:
-        for i in range(len(errors)):
-            f.write(f'Rank: {i+1:.3d}, Error: {errors[i]:.10f}, Ratio: {ratios[i]:.10f}, Singular Value: {s[i]:.10f}\n')
-
-def SVD(W, r: int, args):
-    # SVD
+    Args:
+        W: matrix to decompose
+        r: target rank
+        autorank: if True, automatically determine rank based on singular value threshold
+        theta: threshold ratio for autorank
+    
+    Returns:
+        A: reconstructed A matrix
+        B: reconstructed B matrix
+        loss: reconstruction loss
+        r: actual rank used
+    """
     U, S, V = torch.linalg.svd(W, full_matrices=False)
-
-    # print("U:\n", U)
-    # print("S:", S[0:15], S.shape)
-    # print("V:\n", V)
-    # analyse_svd(W, U, S, V)
     
     # use svd singular value guide rank
-    if args.autorank:
+    if autorank:
         # get rank of SVD
         singular_val_sum, tmp_sum, rank = S.sum().item(), 0, 0
         
         for i in range(W.shape[0]):
             tmp_sum += S[i].item()
-            if tmp_sum / singular_val_sum > args.theta:
+            if tmp_sum / singular_val_sum > theta:
                 rank = i + 1
                 break
         r = rank
@@ -219,174 +173,31 @@ def SVD(W, r: int, args):
     A = torch.sqrt(S[:r]).unsqueeze(1) * V[:r, :]
     W_approx = torch.mm(B, A)
 
-    # loss = torch.norm(W - W_approx) / W.numel()
     loss = torch.norm(W - W_approx)
-    # if args.verbose:
-    #     print(f"reconstruct loss: {loss:.10f}", )
 
     return A, B, loss, r
 
-def FedSVD(lora, r: int, args, num_ : list):
-    _, _, _, _, loss_avg = FedAVG(lora, args)
-    # print('fedavg loss list:', loss_avg)
-    # 1. W_{i} = B_{i}A_{i}
-    # 2. W = avg(W_{i})
-    # 3. A, B = SVD(W, r)
-    sum_ = sum(num_)
+
+def ACA(W, k, autorank=False, eps=1e-5):
+    """
+    Reconstruct matrix W = B * A using Adaptive Cross Approximation (ACA) method.
     
-    layer_weight_list = []
-    # initialize
-    # get weight shape
-    device = lora[0][0][0][0].device
-    for layer in lora[0]:
-        # a 8*768, b 768*8
-        q_shape = torch.Size((layer[0][1].shape[0], layer[0][0].shape[1]))
-        q_dtype = layer[0][0].dtype
-        v_shape = torch.Size((layer[1][1].shape[0], layer[1][0].shape[1]))
-        v_dtype = layer[1][0].dtype
-        layer_weight_list.append(
-            [
-                torch.zeros(q_shape, dtype=q_dtype, device=device),
-                torch.zeros(v_shape, dtype=v_dtype, device=device)
-            ]
-        )
-
-    for client_index, client in enumerate(lora):
-        client_weight = num_[client_index] * 1.0 / sum_
-        for layer_index, layer in enumerate(client):
-            layer_weight_list[layer_index][0] +=  torch.mm(
-                layer[0][1], layer[0][0])
-            layer_weight_list[layer_index][1] +=  torch.mm(
-                layer[1][1], layer[1][0])
-
-    # avg
-    for layer_weight in layer_weight_list:
-        layer_weight[0] /= len(lora)
-        layer_weight[1] /= len(lora)
-
-    # SVD
-    result = copy.deepcopy(lora[0])
-    total_loss = 0
-    rank_list, loss_svd = [], []
-    for layer_index, layer_weight in enumerate(layer_weight_list):
-        q_a, q_b, loss1, r1 = SVD(layer_weight[0], r, args)
-        v_a, v_b, loss2, r2 = SVD(layer_weight[1], r, args)
-        total_loss += loss1.item() + loss2.item()
-        result[layer_index][0] = (q_a, q_b)
-        result[layer_index][1] = (v_a, v_b)
-        loss_svd.append([loss1.item(), loss2.item()])
-        rank_list.append([r1, r2])
+    Args:
+        W: matrix to decompose
+        k: target rank
+        autorank: if True, automatically determine rank based on epsilon threshold
+        eps: threshold for autorank
     
-    # print(f"total fedsvd loss is {total_loss:.10f}")
-    # print(f"fedsvd loss list:", loss_svd)
-    # print(f"rank list: {rank_list}")
-    # print avg rank
-    rank = sum([r1 + r2 for r1, r2 in rank_list]) // ( len(rank_list) * 2 )
-    # print(f"avg rank: {rank}")
-    return result
-
-def FedABOptimHandler(W, A, B):
-    # 定义优化器
-    W = W.clone().detach()
-    A = A.clone().detach().requires_grad_(True)
-    B = B.clone().detach().requires_grad_(True)
-
-    optimizer = optim.Adam([A, B], lr=0.1)
-    num_epoch = 100
-
-    for epoch in range(num_epoch):
-        loss = torch.norm(W - torch.mm(B, A), p=2) / W.numel()
-        # 梯度归零
-        optimizer.zero_grad()
-
-        # 反向传播
-        loss.backward()
-
-        # 更新参数
-        optimizer.step()
-        if epoch == 0:
-            pass
-            # print(f'Epoch [{epoch + 1}/{num_epoch}], Loss: {loss.item():.10f}')
-        # if loss < 1e-8:
-        #     break
-
-    # 检查最终的 A 和 B
-    # print(f'Final Loss: {loss.item():.10f}')
-    return A, B
-
-def FedABOptim(lora):
-    # 1. W_{i} = B_{i}A_{i}
-    # 2. W = avg(W_{i})
-    # 3. optim || W - BA ||
-    # init B=avg(B_{i}), A=avg(A_{i})
-
-    layer_weight_list = []
-    AB_list = []
-
-    # initialize
-    # get weight shape
-    device = lora[0][0][0][0].device
-    for layer in lora[0]:
-        # a 8*768, b 768*8
-        q_shape = torch.Size((layer[0][1].shape[0], layer[0][0].shape[1]))
-        q_dtype = layer[0][0].dtype
-        v_shape = torch.Size((layer[1][1].shape[0], layer[1][0].shape[1]))
-        v_dtype = layer[1][0].dtype
-        layer_weight_list.append(
-            [
-                torch.zeros(q_shape, dtype=q_dtype, device=device),
-                torch.zeros(v_shape, dtype=v_dtype, device=device)
-            ]
-        )
-        # q_a, q_b, v_a, v_b
-        AB_list.append(
-            [
-                torch.zeros_like(layer[0][0], dtype=layer[0][0].dtype, device=device),
-                torch.zeros_like(layer[0][1], dtype=layer[0][1].dtype, device=device),
-                torch.zeros_like(layer[1][0], dtype=layer[1][0].dtype, device=device),
-                torch.zeros_like(layer[1][1], dtype=layer[1][1].dtype, device=device),
-            ]
-        )
-
-    for client in lora:
-        for layer_index, layer in enumerate(client):
-            layer_weight_list[layer_index][0] += torch.mm(
-                layer[0][1], layer[0][0])
-            layer_weight_list[layer_index][1] += torch.mm(
-                layer[1][1], layer[1][0])
-
-            AB_list[layer_index][0] += layer[0][0]
-            AB_list[layer_index][1] += layer[0][1]
-            AB_list[layer_index][2] += layer[1][0]
-            AB_list[layer_index][3] += layer[1][1]
-
-    for layer_weight in layer_weight_list:
-        layer_weight[0] /= len(lora)
-        layer_weight[1] /= len(lora)
-
-    for layer in AB_list:
-        for i in range(len(layer)):
-            layer[i] /= len(lora)
-
-    # ABOptim
-    result = copy.deepcopy(lora[0])
-    for layer_index, layer_weight in enumerate(layer_weight_list):
-        q_a, q_b, v_a, v_b = AB_list[layer_index]
-        q_a, q_b = FedABOptimHandler(layer_weight[0], q_a, q_b)
-        v_a, v_b = FedABOptimHandler(layer_weight[1], v_a, v_b)
-
-        result[layer_index][0] = (q_a, q_b)
-        result[layer_index][1] = (v_a, v_b)
-
-    return result
-
-# reconstruct matrix W = B * A
-# using ACA(Adaptive Cross Approximation) method
-def ACA(W: torch.Tensor, k : int, args, eps = 1e-5):
+    Returns:
+        A: reconstructed A matrix
+        B: reconstructed B matrix
+        loss: reconstruction loss
+        iter: actual rank used
+    """
     with torch.no_grad():
         point, R, device = [], [W], W.device
         m, n, F_data = W.shape[0], W.shape[1], torch.norm(W)
-        iter, max_iter = 0, min(m, n) if args.autorank else k
+        iter_count, max_iter = 0, min(m, n) if autorank else k
         for _ in range(max_iter):
             # 1. choose the pivot xk, yk
             
@@ -405,84 +216,198 @@ def ACA(W: torch.Tensor, k : int, args, eps = 1e-5):
             # 2. recursive
             uk, vk = R[-1][:,yk], R[-1][xk,:] / max_value
             R.append(R[-1] - torch.mm(uk.reshape(-1,1), vk.reshape(1,-1)))
-            iter += 1
+            iter_count += 1
 
             # 3. epsilon
-            if args.autorank and torch.norm(R[-1]) < eps * F_data:
+            if autorank and torch.norm(R[-1]) < eps * F_data:
                 break
 
         # 3. construct the matrix B, A
-        C = torch.zeros((iter, W.shape[0]), dtype=W.dtype).to(device)
-        G = torch.zeros((iter, W.shape[1]), dtype=W.dtype).to(device)
+        C = torch.zeros((iter_count, W.shape[0]), dtype=W.dtype).to(device)
+        G = torch.zeros((iter_count, W.shape[1]), dtype=W.dtype).to(device)
         for ind, (xk, yk) in enumerate(point):
             C[ind,:] = W[:,yk]
             G[ind,:] = W[xk,:]
         
-        M = torch.zeros((iter, iter), dtype=W.dtype).to(device)
-        for i in range(iter):
-            for j in range(iter):
+        M = torch.zeros((iter_count, iter_count), dtype=W.dtype).to(device)
+        for i in range(iter_count):
+            for j in range(iter_count):
                 xi, yj = point[i][0], point[j][1]
                 M[i][j] = W[xi][yj]
 
         B, A = C.T, torch.mm(torch.inverse(M), G).to(device)
-        l = torch.norm(W - torch.mm(B, A))
-        return A, B, l, iter
+        loss = torch.norm(W - torch.mm(B, A))
+        return A, B, loss, iter_count
 
-def FedACA(lora, r: int, args, num_ : list):
-    _, _, _, _, loss_avg = FedAVG(lora, args)
-    # print('fedavg loss list:', loss_avg)
-    # 1. W_{i} = B_{i}A_{i}
-    # 2. W = avg(W_{i})
-    # 3. A, B = SVD(W, r)
-    sum_ = sum(num_)
+
+def ABOptim(W, r, init_A=None, init_B=None, lr=0.1, num_epoch=100):
+    """
+    Reconstruct matrix W = B * A using optimization method.
     
+    Args:
+        W: matrix to decompose
+        r: target rank
+        init_A: initial A matrix (optional)
+        init_B: initial B matrix (optional)
+        lr: learning rate for optimizer
+        num_epoch: number of optimization epochs
+    
+    Returns:
+        A: optimized A matrix
+        B: optimized B matrix
+        loss: final reconstruction loss
+        r: rank used
+    """
+    W = W.clone().detach()
+    # if no initial values provided, use random initialization
+    if init_A is None or init_B is None:
+        init_A = torch.randn(r, W.shape[1], dtype=W.dtype, device=W.device) * 0.01
+        init_B = torch.randn(W.shape[0], r, dtype=W.dtype, device=W.device) * 0.01
+    
+    A = init_A.clone().detach().requires_grad_(True)
+    B = init_B.clone().detach().requires_grad_(True)
+
+    optimizer = optim.Adam([A, B], lr=lr)
+
+    for epoch in range(num_epoch):
+        loss = torch.norm(W - torch.mm(B, A), p=2) / W.numel()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    return A, B, loss, r
+
+
+def FedReconstruct(lora, r, num_, reconstruct_fn, need_init_AB=False, **reconstruct_kwargs):
+    """
+    Generic federated reconstruction aggregation method.
+    
+    Args:
+        lora: list of client LoRA parameters
+        r: LoRA rank
+        num_: list of data counts for each client
+        reconstruct_fn: reconstruction function with signature 
+                       (W, r, **kwargs) -> (A, B, loss, rank)
+        need_init_AB: whether to pass initial A, B to reconstruction function
+        **reconstruct_kwargs: additional arguments passed to reconstruct_fn
+    
+    Returns:
+        result: reconstructed LoRA parameters
+    """
     layer_weight_list = []
-    # initialize
-    # get weight shape
+    AB_list = []  # for storing aggregated A, B (optional)
+    
+    # initialize: get weight shape
     device = lora[0][0][0][0].device
     for layer in lora[0]:
-        # a 8*768, b 768*8
         q_shape = torch.Size((layer[0][1].shape[0], layer[0][0].shape[1]))
         q_dtype = layer[0][0].dtype
         v_shape = torch.Size((layer[1][1].shape[0], layer[1][0].shape[1]))
         v_dtype = layer[1][0].dtype
-        layer_weight_list.append(
-            [
-                torch.zeros(q_shape, dtype=q_dtype, device=device),
-                torch.zeros(v_shape, dtype=v_dtype, device=device)
-            ]
-        )
+        layer_weight_list.append([
+            torch.zeros(q_shape, dtype=q_dtype, device=device),
+            torch.zeros(v_shape, dtype=v_dtype, device=device)
+        ])
+        if need_init_AB:
+            AB_list.append([
+                torch.zeros_like(layer[0][0], dtype=layer[0][0].dtype, device=device),
+                torch.zeros_like(layer[0][1], dtype=layer[0][1].dtype, device=device),
+                torch.zeros_like(layer[1][0], dtype=layer[1][0].dtype, device=device),
+                torch.zeros_like(layer[1][1], dtype=layer[1][1].dtype, device=device),
+            ])
 
+    # aggregate W_i = B_i * A_i
     for client_index, client in enumerate(lora):
-        client_weight = num_[client_index] * 1.0 / sum_
         for layer_index, layer in enumerate(client):
-            layer_weight_list[layer_index][0] +=  torch.mm(
-                layer[0][1], layer[0][0])
-            layer_weight_list[layer_index][1] +=  torch.mm(
-                layer[1][1], layer[1][0])
+            layer_weight_list[layer_index][0] += torch.mm(layer[0][1], layer[0][0])
+            layer_weight_list[layer_index][1] += torch.mm(layer[1][1], layer[1][0])
+            if need_init_AB:
+                AB_list[layer_index][0] += layer[0][0]
+                AB_list[layer_index][1] += layer[0][1]
+                AB_list[layer_index][2] += layer[1][0]
+                AB_list[layer_index][3] += layer[1][1]
 
-    # avg
+    # average
     for layer_weight in layer_weight_list:
         layer_weight[0] /= len(lora)
         layer_weight[1] /= len(lora)
+    
+    if need_init_AB:
+        for layer in AB_list:
+            for i in range(len(layer)):
+                layer[i] /= len(lora)
 
-    # ACA
+    # reconstruct using reconstruct_fn
     result = copy.deepcopy(lora[0])
     total_loss = 0
-    rank_list, loss_svd = [], []
+    rank_list, loss_list = [], []
+    
     for layer_index, layer_weight in enumerate(layer_weight_list):
-        q_a, q_b, loss1, r1 = ACA(layer_weight[0], r, args)
-        v_a, v_b, loss2, r2 = ACA(layer_weight[1], r, args)
+        if need_init_AB:
+            q_a, q_b, v_a, v_b = AB_list[layer_index]
+            q_a, q_b, loss1, r1 = reconstruct_fn(layer_weight[0], r, init_A=q_a, init_B=q_b, **reconstruct_kwargs)
+            v_a, v_b, loss2, r2 = reconstruct_fn(layer_weight[1], r, init_A=v_a, init_B=v_b, **reconstruct_kwargs)
+        else:
+            q_a, q_b, loss1, r1 = reconstruct_fn(layer_weight[0], r, **reconstruct_kwargs)
+            v_a, v_b, loss2, r2 = reconstruct_fn(layer_weight[1], r, **reconstruct_kwargs)
+        
         total_loss += loss1.item() + loss2.item()
         result[layer_index][0] = (q_a, q_b)
         result[layer_index][1] = (v_a, v_b)
-        loss_svd.append([loss1.item(), loss2.item()])
+        loss_list.append([loss1.item(), loss2.item()])
         rank_list.append([r1, r2])
     
-    # print(f"total fedsvd loss is {total_loss:.10f}")
-    # print(f"fedsvd loss list:", loss_svd)
-    # print(f"rank list: {rank_list}")
-    # print avg rank
-    rank = sum([r1 + r2 for r1, r2 in rank_list]) // ( len(rank_list) * 2 )
-    # print(f"avg rank: {rank}")
     return result
+
+
+# ============ Convenience wrapper functions ============
+
+def FedSVD(lora, r, num_, autorank=False, theta=0.98):
+    """
+    Federated reconstruction using SVD method.
+    
+    Args:
+        lora: list of client LoRA parameters
+        r: LoRA rank
+        num_: list of data counts for each client
+        autorank: whether to automatically determine rank
+        theta: threshold ratio for autorank
+    
+    Returns:
+        result: reconstructed LoRA parameters
+    """
+    return FedReconstruct(lora, r, num_, SVD, need_init_AB=False, autorank=autorank, theta=theta)
+
+
+def FedACA(lora, r, num_, autorank=False, eps=1e-5):
+    """
+    Federated reconstruction using ACA (Adaptive Cross Approximation) method.
+    
+    Args:
+        lora: list of client LoRA parameters
+        r: LoRA rank
+        num_: list of data counts for each client
+        autorank: whether to automatically determine rank
+        eps: threshold for autorank
+    
+    Returns:
+        result: reconstructed LoRA parameters
+    """
+    return FedReconstruct(lora, r, num_, ACA, need_init_AB=False, autorank=autorank, eps=eps)
+
+
+def FedABOptim(lora, r, num_, lr=0.1, num_epoch=100):
+    """
+    Federated reconstruction using optimization method with aggregated A, B as initialization.
+    
+    Args:
+        lora: list of client LoRA parameters
+        r: LoRA rank
+        num_: list of data counts for each client
+        lr: learning rate for optimizer
+        num_epoch: number of optimization epochs
+    
+    Returns:
+        result: reconstructed LoRA parameters
+    """
+    return FedReconstruct(lora, r, num_, ABOptim, need_init_AB=True, lr=lr, num_epoch=num_epoch)

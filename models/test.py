@@ -14,7 +14,11 @@ def test_(net_g, datatest, args):
     # testing
     test_loss = 0
     correct = 0
-    data_loader = DataLoader(DatasetSplit(datatest, args.dataset, [i for i in range(len(datatest))]), batch_size=args.bs, shuffle=False)
+    data_loader = DataLoader(
+        DatasetSplit(datatest, args.task, [i for i in range(len(datatest))], seq_len=args.seq_len),
+        batch_size=args.bs,
+        shuffle=False
+    )
 
     correct_label, answer_label = set(), set()
     correct_label_dict, answer_label_dict = {}, {}

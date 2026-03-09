@@ -8,45 +8,59 @@ import matplotlib.pyplot as plt
 import copy
 import sys
 import numpy as np
-import os
-
-from utils.helper import get_label_count_sample, get_label_count, cache_path
+from pathlib import Path
+from utils.helper import get_label_count_sample, get_label_count
 from utils.sampling import dataset_iid, dataset_noniid_shard, dataset_noniid_dirichlet
 from utils.options import args_parser
 from utils import options
 from models.Update import LocalUpdate
-from models.Nets import BertLora
+from models.Nets import LoraNet
 from models.Fed import FedAVG, LoraGA, FedACA
 from models.Fed import FedSVD, FedABOptim
 from models.test import test_
 from datasets import load_dataset
 import torch.nn.modules
 
-# References code
-# https://github.com/alexriggio/BERT-LoRA-TensorRT/tree/main/notebooks
-# https://github.com/philschmid/deep-learning-pytorch-huggingface/blob/main/training/pytorch-2-0-bert-text-classification.ipynb
-
-# python main_fed.py --model bert-base-uncased --dataset agnews --dirichlet_noniid --num_users 1000 --local_bs 32 --local_ep 1 --lr 0.1 --interval 1 --epochs 100 --gpu 0 --init gauss --alpha 1.0
-# python main_fed.py --model gpt2-medium --dataset agnews --dirichlet_noniid --num_users 1000 --local_bs 32 --local_ep 1 --lr 0.1 --interval 1 --epochs 100 --gpu 0 --init gauss --alpha 1.0
-# openai-community/gpt2-medium
-if __name__ == '__main__':
+# Generate output path
+def get_output_path(args):
+    """Generate unique output path for saving results."""
+    # Build base filename
+    data_type = 'iid' if args.iid else f'noniid_alpha{args.alpha}'
+    model_name = Path(args.model).name  # Extract model name from path
+    
+    filename = (
+        f"{model_name}_{args.init}_{args.task}_"
+        f"epoch{args.epochs}_C{args.frac}_{data_type}_"
+        f"local_ep{args.local_ep}_lr{args.lr}"
+    )
+    
+    # Create log directory
+    log_dir = Path('./log')
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Find unique path
+    base_path = log_dir / filename
+    output_path = base_path
+    idx = 0
+    while output_path.with_suffix('.png').exists():
+        output_path = log_dir / f"{filename}_{idx}"
+        idx += 1
+    
+    return output_path
+    
+def main():
     # parse args
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    # get data from huggingface.co/dataset
-    if args.dataset == 'banking77':
-        raw_dataset = load_dataset("PolyAI/banking77", cache_dir = cache_path + '/data')
-    elif args.dataset == 'agnews':
-        raw_dataset = load_dataset("fancyzhx/ag_news", cache_dir = cache_path + '/data')
-    else:
-        # glue sub-dataset
-        raw_dataset = load_dataset("nyu-mll/glue", args.dataset, cache_dir = cache_path + '/data')
+    # load dataset from local path
+    raw_dataset = load_dataset(args.dataset)
     
     print(raw_dataset)
     
     dataset_train = raw_dataset['train']
-    if args.dataset == 'banking77' or args.dataset == '20news' or args.dataset == 'agnews' or args.dataset == 'sst2':
+    # use 'test' split if available, otherwise use 'validation'
+    if 'test' in raw_dataset:
         dataset_test = raw_dataset['test']
     else:
         dataset_test = raw_dataset['validation']
@@ -66,12 +80,8 @@ if __name__ == '__main__':
     else: # default iid 
         dict_users = dataset_iid(dataset_train, args.num_users)
     
-    # get_label_count_sample(dataset_train, dict_users[0])
-    # print('---------------------------------')
-    # get_label_count_sample(dataset_train, dict_users[1])
-    
     # build model
-    net_glob = BertLora(num_labels = len(labels), rank=args.lora_rank, args = args)
+    net_glob = LoraNet(num_labels = len(labels), rank=args.lora_rank, args = args)
     # print(net_glob.model)
     # print(len(net_glob.name_lora_para))
     
@@ -138,25 +148,20 @@ if __name__ == '__main__':
             loss_locals.append(copy.deepcopy(loss))
             acc_locals.append(copy.deepcopy(acc))
 
-        if iter == 0:
-            if args.init == options.LORAGA:
-                lora_glob = LoraGA(lora_locals, lora_glob, args)
-            elif args.init == options.SVD:
-                lora_glob = FedSVD(lora_locals, args.lora_rank, args, num_)
-            elif args.init == options.ACA:
-                lora_glob = FedACA(lora_locals, args.lora_rank, args, num_)
-            else:
-                lora_glob, _, _, _, _ = FedAVG(lora_locals, args)
-        else:
-            # update global weights
-            if args.reduce_method == options.FedAvg:
-                lora_glob, _, _, _, _ = FedAVG(lora_locals, args)
-            elif args.reduce_method == options.FedSVD:
-                lora_glob = FedSVD(lora_locals, args.lora_rank, args, num_)
-            elif args.reduce_method == options.FedABOptim:
-                lora_glob = FedABOptim(lora_locals)
-            else:
-                lora_glob, _, _, _, _ = FedAVG(lora_locals, args)
+        # Aggregate LoRA parameters
+        method = args.init if iter == 0 else args.reduce_method
+        
+        if method == options.LORAGA and iter == 0:
+            lora_glob = LoraGA(lora_locals, lora_glob, args.lr, args.lora_rank)
+        elif method == options.SVD:
+            lora_glob = FedSVD(lora_locals, args.lora_rank, num_, autorank=args.autorank, theta=args.theta)
+        elif method == options.ACA:
+            lora_glob = FedACA(lora_locals, args.lora_rank, num_, autorank=args.autorank)
+        elif method == options.FedABOptim:
+            lora_glob = FedABOptim(lora_locals, args.lora_rank, num_)
+        else:  # FedAvg or default
+            lora_glob, _, _, _, _ = FedAVG(lora_locals)
+        
         net_glob.put_lora_parameters(lora_glob)
 
         # compute loss and accuracy every args.interval rounds
@@ -178,43 +183,8 @@ if __name__ == '__main__':
             # print loss, train acc, test acc
             print('Round {:3d}, Average loss {:.3f}, Train accuracy {:.3f}, Test accuracy {:.3f}'.
                   format(iter,loss_avg, acc_avg, acc_test_local))
-        
-        if iter <= -1:
-            # print lora parameters
-            lora_glob = net_glob.get_lora_parameters()
-            # 12, 2, 2
-            # [[[q_lora_a, q_lora_b], [v_lora_a, v_lora_b]], ...]
-            for layer_ind in range(len(lora_glob)):
-                print(f'layer {layer_ind}   | q_lora_a: {torch.linalg.norm(lora_glob[layer_ind][0][0], ord='fro')} \t' +
-                                            f'q_lora_b: {torch.linalg.norm(lora_glob[layer_ind][0][1], ord='fro')} \t' +
-                                            f'v_lora_a: {torch.linalg.norm(lora_glob[layer_ind][1][0], ord='fro')} \t'+
-                                            f'v_lora_b: {torch.linalg.norm(lora_glob[layer_ind][1][1], ord='fro')}')
-            print('--------------------------------------')
-            if iter == 1:
-                print('\t\t\t\t')
-                exit(0)
-    
-    # path
-    path_name = './log/{model}_{path}_{dataset}_epoch{epochs}_C{frac}_{iid}{alpha}_localep{local_ep}_ep{ep}_lr{lr}'.format(
-                    model = args.model,
-                    path = args.init,
-                    dataset = args.dataset,
-                    epochs = args.epochs,
-                    frac = args.frac,
-                    iid = 'iid' if args.iid else ('noniid_dirichlet' if not args.shard_noniid else 'noniid_shard'),
-                    alpha = '_alpha{}'.format(args.alpha) if args.dirichlet_noniid else '',
-                    ep = args.local_ep,
-                    local_ep = args.local_ep,
-                    lr = args.lr
-                    )
-    # if path_name exists, add a number to the end: 0, 1, 2, ...
-    ind = 0
-    while True:
-        if os.path.exists(path_name + '.png'):
-            path_name = path_name + f'_{ind}'
-            ind += 1
-        else:
-            break
+
+    output_path = get_output_path(args)
     
     # plot loss curve
     plt.subplot(1, 2, 1)
@@ -229,14 +199,17 @@ if __name__ == '__main__':
     plt.title('Test Accuracy')
     plt.xlabel('round')
     plt.ylabel('accuracy')
-    plt.savefig(path_name + '.png')
+    plt.savefig(str(output_path) + '.png')
 
     # write loss to file
-    with open(path_name + '.txt', 'w') as file:
+    with open(str(output_path) + '.txt', 'w') as file:
         # write command arg to file
         file.write('Command line arg: ')
         file.write(' '.join(sys.argv))
         file.write('\n')
-        for iter, (a, l) in enumerate(zip(acc_test, loss_train)):
-            file.write('Round {:3d}, Average loss {:.3f} Accuracy {:.3f}\n'.format(iter * args.interval, l, a))
+        for iter, (train_acc, test_acc, l) in enumerate(zip(acc_train, acc_test, loss_train)):
+            file.write('Round {:3d}, Average loss {:.3f}, Train accuracy {:.3f}, Test accuracy {:.3f}\n'.format(iter * args.interval, l, train_acc, test_acc))
         file.write('\n')
+
+if __name__ == '__main__':
+    main()
