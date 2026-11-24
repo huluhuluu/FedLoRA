@@ -1,60 +1,43 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# @python: 3.8
+"""Evaluation returns mergeable statistics for data shards."""
 
+__test__ = False
+import time
 import torch
-from torch import nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from models.Update import DatasetSplit
+from algorithm.Fed import client_state
 
-def test_(net_g, datatest, args):
-    net_g.eval()
-    net_g.to(args.device)
-    # testing
-    test_loss = 0
-    correct = 0
-    data_loader = DataLoader(
-        DatasetSplit(datatest, args.task, [i for i in range(len(datatest))], seq_len=args.seq_len),
-        batch_size=args.bs,
-        shuffle=False
-    )
 
-    correct_label, answer_label = set(), set()
-    correct_label_dict, answer_label_dict = {}, {}
-    logits_list = []
-    for idx, (input_ids, attention_mask, target) in enumerate(data_loader):
-        if args.gpu != -1:
-            input_ids, attention_mask, target = input_ids.to(args.device), attention_mask.to(args.device),  target.to(args.device)
-        # if hasattr(torch.cuda, 'empty_cache'):
-        #     torch.cuda.empty_cache()
-        with torch.no_grad():
-            logits = net_g(input_ids, attention_mask=attention_mask).logits  # get logits
-            
-            # sum up batch loss
-            test_loss += F.cross_entropy(logits, target, reduction='sum').item()
-            # get the index of the max log-probability
-            y_pred = logits.argmax(dim=1)  # get the index of the max log-probability
+@torch.no_grad()
+def evaluate_statistics(net, bundle, state, client=None, indices=None):
+    if client is not None:
+        config, persistent = client
+        state = client_state(state, config, 0)
+        state.tensors.update(persistent.private)
+    net.prepare(state)
+    net.model.eval()
+    totals = {}
+    indices = list(range(len(bundle.evaluation))) if indices is None else indices
+    batch_size = net.config.get("evaluation", {}).get("batch_size", 4)
+    start = time.perf_counter()
+    for offset in range(0, len(indices), batch_size):
+        batch = {
+            key: value.to(net.device)
+            for key, value in net.task.collate(
+                net.tokenizer, bundle.rows(indices[offset : offset + batch_size], False)
+            ).items()
+        }
+        with net.autocast():
+            output = net.model(**batch)
+            output.loss = net.task.compute_loss(output, batch)
+        if not torch.isfinite(output.loss):
+            raise FloatingPointError("Nonfinite evaluation loss")
+        for key, value in net.task.statistics(output, batch).items():
+            totals[key] = totals.get(key, 0) + value
+    return {"statistics": totals, "physical_seconds": time.perf_counter() - start}
 
-            # record the correct prediction label
-            for i in range(len(y_pred)):
-                if y_pred[i] == target[i]:
-                    correct_label.add(target[i].item())
-                    if correct_label_dict.get(target[i].item()) is None:
-                        correct_label_dict[target[i].item()] = 1
-                    else:
-                        correct_label_dict[target[i].item()] += 1
-                answer_label.add(y_pred[i].item())
-            logits_list.append(logits)
-            correct += y_pred.eq(target).long().sum().item()
 
-    test_loss /= len(data_loader.dataset)
-    accuracy = 100.0 * correct / len(data_loader.dataset)
-    if args.verbose:
-        print('Correct label:', correct_label)
-        print('Answer label:', answer_label)
-        # print correct dict
-        print('Correct label dict:', correct_label_dict)
-        print('\nTest set: Average loss: {:.4f} \tAccuracy: {}/{} ({:.2f}%)\n'.format(
-            test_loss, correct, len(data_loader.dataset), accuracy))
-    return accuracy, test_loss
+def evaluate(net, bundle, state, client=None):
+    result = evaluate_statistics(net, bundle, state, client)
+    return {
+        **net.task.finalize(result["statistics"]),
+        "physical_seconds": result["physical_seconds"],
+    }

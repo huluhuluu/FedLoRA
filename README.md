@@ -1,70 +1,43 @@
 # FedLoRA
 
-## 项目简介
+FedLoRA 是面向算法实验的联邦 LoRA 模拟器，同时提供标准中心式训练作为对比。一次实验选择一个模型、一个数据集和一个任务；逻辑客户端配置与实际 GPU 资源分别设置。
 
-本项目在 [Shaoxiong Ji](https://github.com/shaoxiongji) 的 [Federated-Learning](https://github.com/shaoxiongji/Federated-Learning) 项目基础上进行改进，实现了 **FedLoRA**：将联邦学习（Federated Learning）与 LoRA（Low-Rank Adaptation）技术相结合，用于对 BERT、GPT-2 等预训练语言模型进行参数高效的联邦微调。
+支持的功能：
 
-### 核心特性
+- 分类、文本对分类与因果语言建模；任务插件统一接管批处理、损失和指标。
+- Transformers AutoModel 与 PEFT 命名 A/B 状态，适配 GPT-2、BERT、Qwen 等兼容架构的目标模块。
+- IID、标签 Shard、Dirichlet 数据划分；固定分组、资源配置分组、标签分布分组。
+- 均匀或组间均衡选择；扁平、分层 FedAvg 与支持异构 rank/alpha 的 QR/SVD 聚合。
+- 公共初始化插件；共享、私有或冻结头；客户端独立预算、优化器状态和模拟硬件。
+- 标准中心式全局 batch 梯度更新，有界流式归约，持续的优化器、采样器、调度器与 AMP 状态。
+- 串行、单机多卡、多机多卡；驻留模型与动态任务分发。
+- 部分 GPU 临时评估、其余 GPU 继续训练；版本化快照、有界队列与评估完成后归还 worker。
+- 联邦虚拟时间、通信体积、实测标定；JSON 配置、分类对比矩阵、检查点与续跑。
 
-- **参数高效**：只训练和传输 LoRA 低秩矩阵（A、B），大幅减少通信开销
-- **多种聚合算法**：支持 FedAvg、FedSVD、FedABOptim、FedACA 等多种联邦聚合方法
-- **多种初始化方法**：支持 Gaussian、Kaiming、LoRAGA、PiSSA、SVD、ACA 等初始化策略
-- **灵活的数据分布**：支持 IID、Shard Non-IID、Dirichlet Non-IID 等数据分布方式
-- **丰富的数据集**：支持 Banking77、AGNews、SST2 以及 GLUE 多个子任务
+从 [install.md](install.md) 开始。四卡示例均限制数据和训练预算，需要根据本机修改资源路径：
 
-## 文件结构说明
+~~~bash
+.venv/bin/python main.py --config experiments/configs/agnews_gpt2_shared_smoke.json --validate-only
+.venv/bin/python main.py --config experiments/configs/agnews_gpt2_shared_smoke.json
+.venv/bin/python main.py --config experiments/configs/agnews_gpt2_centralized_smoke.json
+~~~
 
-```
-FedLoRA/
-├── main_fed.py              # 主训练入口，包含联邦学习训练循环
-├── contrast_rank.py         # 对比学习相关实验脚本
-├── contrast_rank_piece.py   # 分片对比学习实验脚本
-├── run.sh                   # 训练启动脚本示例
-├── requirements.txt         # 项目依赖列表
-│
-├── models/
-│   ├── Fed.py               # 联邦聚合算法实现（FedAvg, FedSVD, FedABOptim, LoraGA, FedACA）
-│   ├── Nets.py              # BERT/GPT-2 LoRA 模型定义和参数管理
-│   ├── Update.py            # 本地客户端训练逻辑和数据加载
-│   └── test.py              # 测试集评估函数
-│
-└── utils/
-    ├── options.py           # 命令行参数解析和配置定义
-    ├── sampling.py          # 数据采样策略（IID/Non-IID 分布）
-    ├── helper.py            # 辅助工具函数（标签统计等）
-    └── draw.py              # 训练曲线绘图工具
-```
+~~~text
+main.py                     统一 JSON 命令行入口
+main_fed.py                 兼容入口
+algorithm/                  划分、分组、选择、初始化、聚合与注册
+  custom/                   算法与任务插件示例
+tasks/                      任务批处理、模型类型、损失、统计与指标
+models/                     PEFT 状态、本地训练和评估
+training/                   公共训练步骤、标准中心式循环
+simulation/                 联邦轮次、客户端持久状态、虚拟时间
+execution/                  动态任务池、评估调度、本地与跨节点 worker
+utils/                      配置、数据、产物、缓存和绘图
+tools/                      集群启动、时间标定、对比矩阵
+experiments/configs/        可追踪的配置模板
+experiments/runs/           自动生成并由 Git 忽略的实验目录
+tests/                      离线小模型测试
+docs/                       模块、配置和扩展说明
+~~~
 
-## 快速开始
-
-```bash
-# 基本运行示例
-python main_fed.py \
-    --model bert-base-uncased \
-    --dataset agnews \
-    --dirichlet_noniid \
-    --num_users 1000 \
-    --local_bs 32 \
-    --local_ep 1 \
-    --lr 0.1 \
-    --epochs 300 \
-    --gpu 0 \
-    --alpha 10.0
-```
-
-更多参数说明请参考 `utils/options.py`。
-
-## 参考文献
-
-### 论文
-- **FedAvg**: [Communication-Efficient Learning of Deep Networks from Decentralized Data](https://arxiv.org/abs/1602.05629)
-- **LoRA**: [LoRA: Low-Rank Adaptation of Large Language Models](https://openreview.net/forum?id=nZeVKeeFYf9)
-
-### 代码参考
-- Shaoxiong Ji. (2018, March 30). A PyTorch Implementation of Federated Learning. Zenodo. http://doi.org/10.5281/zenodo.4321561
-- https://github.com/alexriggio/BERT-LoRA-TensorRT/tree/main/notebooks
-- https://github.com/philschmid/deep-learning-pytorch-huggingface/blob/main/training/pytorch-2-0-bert-text-classification.ipynb
-
-## 相关项目
-
-- **性能分析工具**: [HF-LLM-Profiler](https://github.com/huluhuluu/HF-LLM-Profiler) - HuggingFace 大语言模型性能分析工具
+详细说明见 [文档索引](docs/README.md)。每个 worker 需要容纳一个完整骨干；当前提供 LoRA 训练，未启用客户端内部 DDP/FSDP、量化、异步联邦轮次或编译执行。中心式使用 CPU 梯度协调与持久优化器，性能边界见 [中心式训练](docs/centralized.md)。

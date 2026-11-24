@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "task": {
+    "type": "classification"
+  },
+  "runtime": {
+    "precision": "bf16",
+    "cpu_threads": 2
+  },
+  "model": {
+    "source": "local",
+    "path": "/data/HF_MODELS/gpt2-xl",
+    "head_policy": "global_trainable",
+    "adapter": {
+      "target_modules": [
+        "c_attn"
+      ]
+    }
+  },
+  "data": {
+    "source": "local",
+    "path": "/data/HF_MODELS/data/ag_news",
+    "text_fields": [
+      "text"
+    ],
+    "label_field": "label",
+    "train_split": "train",
+    "eval_split": "test",
+    "seq_len": 32,
+    "max_train_samples": 64,
+    "max_eval_samples": 32
+  },
+  "execution": {
+    "backend": "local",
+    "devices": [
+      "cuda:0",
+      "cuda:1",
+      "cuda:2",
+      "cuda:3"
+    ],
+    "placement": "balanced_count"
+  },
+  "evaluation": {
+    "mode": "async",
+    "devices": [
+      "cuda:2",
+      "cuda:3"
+    ],
+    "trigger": {
+      "unit": "round",
+      "every": 2
+    },
+    "at_end": true,
+    "batch_size": 1,
+    "pending_policy": "latest",
+    "save_best": true,
+    "metric": "loss",
+    "direction": "min"
+  },
+  "output": {
+    "root": "../runs",
+    "checkpoint_every": 1,
+    "trace_dispatch": true
+  },
+  "experiment": {
+    "name": "agnews-gpt2-shared",
+    "seed": 42,
+    "mode": "federated"
+  },
+  "clients": {
+    "count": 8,
+    "defaults": {
+      "adapter": {
+        "rank": 4,
+        "alpha": 8
+      },
+      "train": {
+        "batch_size": 1,
+        "budget": {
+          "unit": "steps",
+          "value": 1
+        },
+        "optimizer": {
+          "name": "sgd",
+          "lr": 0.01,
+          "momentum": 0.5,
+          "state_policy": "retain"
+        }
+      }
+    }
+  },
+  "selection": {
+    "method": "uniform",
+    "params": {
+      "clients_per_round": 8
+    }
+  },
+  "aggregation": {
+    "mode": "flat",
+    "method": "svd",
+    "params": {
+      "weighting": "samples"
+    }
+  },
+  "simulation": {
+    "rounds": 4
+  },
+  "timing": {
+    "mode": "analytic",
+    "assumed_step_seconds": 0.1
+  }
+}

@@ -1,5 +1,8 @@
-transformers
-peft
-datasets
-matplotlib
-numpy
+# Install torch separately for your CUDA/CPU platform (see install.md).
+transformers==4.57.3
+peft==0.18.1
+datasets==4.1.1
+accelerate==1.13.0
+numpy==1.26.4
+safetensors==0.5.3
+matplotlib==3.10.8

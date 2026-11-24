@@ -1,0 +1,14 @@
+{
+  "base": "agnews_gpt2_smoke.json",
+  "grid": {
+    "experiment.seed": [
+      42,
+      43
+    ],
+    "aggregation.method": [
+      "fedavg",
+      "svd"
+    ]
+  },
+  "output_root": "../runs"
+}

@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "experiment": {
+    "name": "agnews-gpt2-xl-smoke",
+    "seed": 42
+  },
+  "runtime": {
+    "precision": "bf16",
+    "cpu_threads": 2
+  },
+  "model": {
+    "source": "local",
+    "path": "/data/HF_MODELS/gpt2-xl",
+    "head_policy": "global_trainable",
+    "adapter": {
+      "target_modules": [
+        "c_attn"
+      ]
+    }
+  },
+  "data": {
+    "source": "local",
+    "path": "/data/HF_MODELS/data/ag_news",
+    "task": "agnews",
+    "seq_len": 32,
+    "max_train_samples": 32,
+    "max_eval_samples": 8
+  },
+  "clients": {
+    "count": 2,
+    "defaults": {
+      "adapter": {
+        "rank": 4,
+        "alpha": 8
+      },
+      "train": {
+        "batch_size": 1,
+        "budget": {
+          "unit": "steps",
+          "value": 1
+        },
+        "optimizer": {
+          "name": "sgd",
+          "lr": 0.01,
+          "momentum": 0.5,
+          "state_policy": "reset"
+        }
+      }
+    }
+  },
+  "selection": {
+    "method": "uniform",
+    "params": {
+      "clients_per_round": 2
+    }
+  },
+  "aggregation": {
+    "mode": "flat",
+    "method": "fedavg",
+    "params": {
+      "weighting": "samples"
+    }
+  },
+  "simulation": {
+    "rounds": 1
+  },
+  "execution": {
+    "backend": "local",
+    "devices": [
+      "cuda:0",
+      "cuda:1"
+    ],
+    "placement": "balanced_count"
+  },
+  "evaluation": {
+    "batch_size": 1,
+    "every": 1
+  },
+  "timing": {
+    "mode": "analytic",
+    "assumed_step_seconds": 0.1
+  },
+  "output": {
+    "root": "../runs",
+    "checkpoint_every": 1
+  },
+  "task": {
+    "type": "classification"
+  }
+}

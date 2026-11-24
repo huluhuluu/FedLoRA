@@ -1,0 +1,72 @@
+{
+  "base": "agnews_gpt2_shared_smoke.json",
+  "grid": {
+    "experiment.seed": [
+      42,
+      43
+    ]
+  },
+  "cases": [
+    {
+      "name": "centralized",
+      "overrides": {
+        "experiment": {
+          "mode": "centralized"
+        },
+        "timing": {
+          "mode": "off"
+        },
+        "model": {
+          "head_policy": "global_trainable",
+          "adapter": {
+            "rank": 4,
+            "alpha": 8
+          }
+        },
+        "training": {
+          "batch_size": 8,
+          "micro_batch_size": 1,
+          "budget": {
+            "unit": "steps",
+            "value": 4
+          },
+          "optimizer": {
+            "name": "adamw",
+            "lr": 0.0002
+          },
+          "max_grad_norm": 1,
+          "scheduler": {
+            "name": "constant",
+            "warmup_steps": 0
+          }
+        },
+        "evaluation": {
+          "trigger": {
+            "unit": "step",
+            "every": 2
+          }
+        }
+      },
+      "grid": {
+        "initialization.method": [
+          "kaiming",
+          "gaussian"
+        ]
+      }
+    },
+    {
+      "name": "federated",
+      "grid": {
+        "initialization.method": [
+          "kaiming",
+          "gaussian"
+        ],
+        "aggregation.method": [
+          "fedavg",
+          "svd"
+        ]
+      }
+    }
+  ],
+  "output_root": "../runs"
+}

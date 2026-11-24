@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "experiment": {
+    "name": "agnews-gpt2-xl",
+    "seed": 42
+  },
+  "runtime": {
+    "precision": "bf16",
+    "cpu_threads": 2
+  },
+  "model": {
+    "source": "local",
+    "path": "/data/HF_MODELS/gpt2-xl",
+    "adapter": {
+      "target_modules": [
+        "c_attn"
+      ]
+    }
+  },
+  "data": {
+    "source": "local",
+    "path": "/data/HF_MODELS/data/ag_news",
+    "task": "agnews",
+    "seq_len": 128
+  },
+  "clients": {
+    "count": 20,
+    "defaults": {
+      "adapter": {
+        "rank": 8,
+        "alpha": 16
+      },
+      "train": {
+        "batch_size": 2,
+        "budget": {
+          "unit": "steps",
+          "value": 10
+        },
+        "optimizer": {
+          "name": "adamw",
+          "lr": 0.0002,
+          "state_policy": "reset"
+        }
+      }
+    }
+  },
+  "partition": {
+    "method": "dirichlet",
+    "params": {
+      "alpha": 0.5
+    }
+  },
+  "grouping": {
+    "method": "distribution",
+    "params": {
+      "num_groups": 4
+    }
+  },
+  "selection": {
+    "method": "group_balanced",
+    "params": {
+      "clients_per_round": 8
+    }
+  },
+  "aggregation": {
+    "mode": "flat",
+    "method": "svd",
+    "params": {
+      "weighting": "samples"
+    }
+  },
+  "simulation": {
+    "rounds": 10
+  },
+  "execution": {
+    "backend": "local",
+    "devices": [
+      "cuda:0",
+      "cuda:1",
+      "cuda:2",
+      "cuda:3"
+    ],
+    "placement": "balanced_work"
+  },
+  "evaluation": {
+    "batch_size": 2,
+    "every": 1
+  },
+  "timing": {
+    "mode": "off"
+  },
+  "output": {
+    "root": "../runs",
+    "checkpoint_every": 10
+  },
+  "task": {
+    "type": "classification"
+  }
+}

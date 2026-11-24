@@ -1,0 +1,34 @@
+# Python and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Environments, downloads and package outputs
+.venv/
+venv/
+.cache/
+build/
+dist/
+*.egg-info/
+/data/
+/datasets/
+/pretrained/
+/checkpoints/
+/models/bert-base-uncased/
+
+# Experiment artifacts and local configuration
+/experiments/runs/
+/experiments/reports/
+/experiments/cache/
+/experiments/local/
+/runs/
+/log/
+/png/
+/save/analyse/
+/docs/_build/
+/AGENTS.md

@@ -1,137 +1,104 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# Python version: 3.8
+"""Bounded local training on one reusable backbone per worker."""
 
+import math
+import time
+import numpy as np
 import torch
-from torch import nn, autograd
-from torch.utils.data import DataLoader, Dataset
-from transformers import AutoTokenizer
-
-# Global tokenizer (shared across workers)
-tokenizer = None
-
-# Task-specific text field names
-task_to_keys = {
-    "banking77": ("text", None),
-    "cola": ("sentence", None),
-    "mnli": ("premise", "hypothesis"),
-    "mrpc": ("sentence1", "sentence2"),
-    "qnli": ("question", "sentence"),
-    "qqp": ("question1", "question2"),
-    "rte": ("sentence1", "sentence2"),
-    "sst2": ("text", None),
-    "stsb": ("sentence1", "sentence2"),
-    "wnli": ("sentence1", "sentence2"),
-    "agnews": ("text", None),
-}
+from algorithm.Fed import client_state
+from algorithm.interfaces import ClientUpdate, Workload
+from utils.helper import seed_training, cpu_tree
+from training.loop import make_optimizer, forward_batch
 
 
-class DatasetSplit(Dataset):
-    def __init__(self, dataset, task, idxs, seq_len=128):
-        self.dataset = dataset
-        self.task = task
-        self.idxs = [int(idx) for idx in idxs]
-        self.seq_len = seq_len
+def train_client(net, bundle, global_state, task, worker_id=0):
+    state = client_state(global_state, task.config, task.seed)
+    state.tensors.update(task.persistent.private)
+    net.prepare(state)
+    net.invalidate()
+    # Adapter construction must not change dropout RNG when tasks migrate between workers.
+    seed_training(task.seed)
+    model = net.model
+    model.train()
+    spec = task.config["train"]
+    opt = spec["optimizer"]
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    optimizer = make_optimizer(parameters, opt)
+    if opt["state_policy"] == "retain" and task.persistent.optimizer:
+        optimizer.load_state_dict(task.persistent.optimizer)
+    scaler = torch.amp.GradScaler("cuda", enabled=net.precision == "fp16")
+    if task.persistent.scaler:
+        scaler.load_state_dict(task.persistent.scaler)
+    successful_steps = 0
+    batch_size, budget = spec["batch_size"], spec["budget"]
+    batches_per_epoch = math.ceil(len(task.indices) / batch_size)
+    steps = (
+        budget["value"] * batches_per_epoch
+        if budget["unit"] == "epochs"
+        else budget["value"]
+    )
+    totals, processed, tokens = {}, 0, 0
+    generator = np.random.default_rng(task.seed)
+    order, cursor = [], 0
+    if net.device.type == "cuda":
+        torch.cuda.synchronize(net.device)
+    start = time.perf_counter()
+    for _ in range(steps):
+        if cursor >= len(order):
+            order = generator.permutation(task.indices).tolist()
+            cursor = 0
+        indices = order[cursor : cursor + batch_size]
+        cursor += batch_size
+        optimizer.zero_grad(set_to_none=True)
+        batch, output, loss = forward_batch(net, bundle, indices)
+        scaler.scale(loss).backward()
+        if spec.get("max_grad_norm"):
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(parameters, spec["max_grad_norm"])
+        old_scale = scaler.get_scale()
+        scaler.step(optimizer)
+        scaler.update()
+        successful_steps += int(scaler.get_scale() >= old_scale)
+        for key, value in net.task.statistics(output, batch).items():
+            totals[key] = totals.get(key, 0) + value
+        processed += len(indices)
+        tokens += int(batch["attention_mask"].sum())
+    if net.device.type == "cuda":
+        torch.cuda.synchronize(net.device)
+    elapsed = time.perf_counter() - start
+    result = net.export()
+    from training.loop import compute_signature
 
-    def __len__(self):
-        return len(self.idxs)
-
-    def __getitem__(self, item):
-        global tokenizer, task_to_keys
-        
-        text_key = task_to_keys[self.task][0]
-        text = self.dataset[self.idxs[item]][text_key]
-        
-        # Handle pair tasks (e.g., MNLI, MRPC)
-        if task_to_keys[self.task][1] is not None:
-            text_pair = self.dataset[self.idxs[item]][task_to_keys[self.task][1]]
-            text_encoded = tokenizer(
-                text, text_pair,
-                truncation=True,
-                padding='max_length',
-                max_length=self.seq_len,
-                return_tensors='pt'
-            )
-        else:
-            text_encoded = tokenizer(
-                text,
-                truncation=True,
-                padding='max_length',
-                max_length=self.seq_len,
-                return_tensors='pt'
-            )
-        
-        input_ids = text_encoded['input_ids'].squeeze()
-        attention_mask = text_encoded['attention_mask'].squeeze()
-        label = self.dataset[self.idxs[item]]['label']
-        
-        return input_ids, attention_mask, label
-
-
-class LocalUpdate(object):
-    def __init__(self, args, dataset=None, idxs=None):
-        self.args = args
-        self.loss_func = nn.CrossEntropyLoss()
-        self.selected_clients = []
-
-        global tokenizer
-        if tokenizer is None:
-            tokenizer = AutoTokenizer.from_pretrained(args.model)
-            # Ensure pad token exists
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-        
-        self.ldr_train = DataLoader(
-            DatasetSplit(dataset, self.args.task, idxs, seq_len=args.seq_len),
-            batch_size=self.args.local_bs,
-            shuffle=True
-        )
-
-    def train(self, net, printflag = False):
-        net.model.train()
-        net.model.to(self.args.device)
-        # train and update
-        optimizer = torch.optim.SGD(net.model.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        # optimizer = torch.optim.Adam(net.model.parameters(), lr=self.args.lr, eps=1e-8)
-        
-        epoch_loss = []
-        acc_ = [0 for i in range(self.args.local_ep)]
-        for iter in range(self.args.local_ep):
-            batch_loss = []
-            correct = 0
-
-            correct_label = set()
-            answer_label = set()
-            for batch_idx, (input_ids, attention_mask, label) in enumerate(self.ldr_train):
-                input_ids, attention_mask, label = input_ids.to(self.args.device), attention_mask.to(self.args.device), label.to(self.args.device)
-
-                net.model.zero_grad()
-
-                logits = net.model(input_ids, attention_mask=attention_mask).logits  # Get logits from model output
-                loss = self.loss_func(logits, label)
-
-                # deepcopy logits and label
-                logits_copy = logits.detach().clone()
-                label_copy = label.detach().clone()
-                y_pred = logits_copy.argmax(dim=1)  # get the index of the max log-probability
-                correct += y_pred.eq(label_copy).long().sum().item() # get correct num
-                # record the correct prediction label
-                for i in range(len(y_pred)):
-                    if y_pred[i] == label_copy[i]:
-                        correct_label.add(label_copy[i].item())
-                    answer_label.add(y_pred[i].item())
-                
-                loss.backward()
-                optimizer.step()
-                batch_loss.append(loss.item())
-            # add accuracy to acc_
-            acc_[iter] = correct / len(self.ldr_train.dataset)
-
-            if self.args.verbose:
-                # print('correct labels:', correct_label)
-                # print('answer labels:', answer_label)
-                print('Update Epoch: {} \tAverage Loss: {:.6f}\tAccuracy: {:.2f}%'.format(
-                    iter, sum(batch_loss) / len(batch_loss), 100. * correct / len(self.ldr_train.dataset)))
-            epoch_loss.append(sum(batch_loss)/len(batch_loss))
-        return net.get_lora_parameters(), sum(epoch_loss) / len(epoch_loss), acc_[-1], epoch_loss[-1] > epoch_loss[0] * 1.1
-
+    workload = Workload(
+        compute_signature=compute_signature(result, net.config, spec),
+        samples_processed=processed,
+        unique_samples=min(processed, len(task.indices)),
+        tokens_processed=tokens,
+        batches=steps,
+        optimizer_steps=successful_steps,
+        upload_bytes=result.payload_bytes(),
+        download_bytes=state.payload_bytes(),
+        physical_seconds=elapsed,
+        batch_size=batch_size,
+        seq_len=net.config["data"]["seq_len"],
+        rank=task.config["adapter"]["rank"],
+        precision=net.precision,
+        device=str(net.device),
+        hardware_profile=net.config["execution"].get("hardware_profile")
+        or (
+            torch.cuda.get_device_name(net.device)
+            if net.device.type == "cuda"
+            else "cpu"
+        ),
+    )
+    return ClientUpdate(
+        task.client_id,
+        task.round_id,
+        task.global_version,
+        result,
+        len(task.indices),
+        {**net.task.finalize(totals), "loss_weight": totals["weight"]},
+        workload,
+        cpu_tree(optimizer.state_dict()) if opt["state_policy"] == "retain" else None,
+        worker_id,
+        scaler.state_dict(),
+    )

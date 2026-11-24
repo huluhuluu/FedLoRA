@@ -1,1 +1,4 @@
-python main_fed.py --model /data/HF_MODELS/Qwen2-0.5B --dataset /data/HF_MODELS/datasets/ag_news --dirichlet_noniid --num_users 1000 --local_bs 32 --local_ep 1 --lr 0.1 --interval 1 --epochs 100 --gpu 0 --alpha 1.0
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+exec .venv/bin/python main.py "$@"

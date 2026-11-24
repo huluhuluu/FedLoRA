@@ -1,130 +1,83 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# Python version: 3.8
-# set full print
-import torch
-torch.set_printoptions(profile="full")
+"""Deterministic seeds and bounded runtime caches."""
 
-# get label counts
-def get_label_count(dataset_train, dataset_test):
-    # get label counts
-    label_counts_train = {}
-    label_counts_test = {}
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
 
-    # traverse all train data
-    for i in range(len(dataset_train)):
-        if label_counts_train.get(dataset_train[i]['label']) is None:
-            label_counts_train[dataset_train[i]['label']] = 1
-        else:
-            label_counts_train[dataset_train[i]['label']] += 1
-    
-    # traverse all test data
-    for i in range(len(dataset_test)):
-        if label_counts_test.get(dataset_test[i]['label']) is None:
-            label_counts_test[dataset_test[i]['label']] = 1
-        else:
-            label_counts_test[dataset_test[i]['label']] += 1
-    
-
-    # print label counts res
-    for key in label_counts_train.keys():
-        print('label: {},train count: {} test count: {}'.format(
-            key, 
-            label_counts_train[key], 
-            label_counts_test[key] if label_counts_test.get(key) is not None else 0))
-
-# get label counts after sampling
-# dataset: dataset_train
-# users: sampled index for users
-def get_label_count_sample(dataset, users, verbose = True):
-    label_counts = {}
-    users = list(users)
-    for i in range(len(users)):
-        ind = int(users[i])
-        if label_counts.get(dataset[ind]['label']) is None:
-            label_counts[dataset[ind]['label']] = 1
-        else:
-            label_counts[dataset[ind]['label']] += 1
-    
-    sum_label_count = 0
-    for key in label_counts.keys():
-        if verbose:
-            print('label: {}, count: {}'.format(key, label_counts[key]))
-        sum_label_count += 1
-    print('label num: {}, data num {}'.format(sum_label_count, len(users)))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ASSET_ROOT = Path("/data/HF_MODELS")
 
 
-def analyse_svd(W, U, S, V):
-    """
-    Analyze SVD decomposition and save results.
-    """
-    # resolve file path conflicts
-    png_path = 'save/analyse/svd.png'
-    txt_path = 'save/analyse/svd.txt'
-    # if exists, add a number to the file name
-    if os.path.exists(png_path):
-        index = 1
-        while index < 5:
-            new_png_path = f'save/analyse/svd_{index}.png'
-            new_txt_path = f'save/analyse/svd_{index}.txt'
-            if not os.path.exists(new_png_path):
-                png_path = new_png_path
-                txt_path = new_txt_path
-                break
-            index += 1
-        if index == 5:
-            return
-    # statistics
-    errors, ratios, s = [], [], []
-    singular_val_sum = 0
-    for rank in range(1, W.shape[0]//5 + 1):
-        # decompose W
-        B = U[:, :rank] * torch.sqrt(S[:rank])
-        A = torch.sqrt(S[:rank]).unsqueeze(1) * V[:rank, :]
-        W_approx = torch.mm(B, A)
-        # compute loss
-        loss = torch.norm(W - W_approx)
-        # compute singular value sum
-        singular_val_sum += S[rank].item()
+def stable_seed(seed, *parts):
+    payload = ":".join(map(str, (seed, *parts))).encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "little") % (2**31)
 
-        errors.append(loss.item())
-        ratios.append(singular_val_sum)
-        s.append(S[rank].item())
-    # plot
-    plt.figure(figsize=(15, 5))
-    
-    # fig1
-    plt.subplot(2, 2, 1)
-    plt.plot(range(len(errors)), errors)
-    plt.title('Reconstruction Error')
-    plt.xlabel('r')
-    plt.ylabel('Error')
-    # fig2
-    plt.subplot(2, 2, 2)
-    ratios = [ s_ / singular_val_sum for s_ in ratios ]
-    plt.plot(range(len(ratios)), ratios)
-    plt.title('Singular Values Ratio')
-    plt.xlabel('r')
-    plt.ylabel('Ratio')
-    # fig 3
-    plt.subplot(2, 2, 3)
-    plt.plot(range(len(s)), s)
-    plt.title('Singular Values')
-    plt.xlabel('Index')
-    plt.ylabel('Value')
-    # fig4
-    plt.subplot(2, 2, 4)
-    plt.plot(range(len(errors)), errors, label='Errors')
-    plt.plot(range(len(ratios)), ratios, label='Ratios')
-    plt.plot(range(len(s)), s, label='Singular Values')
-    plt.title('Combined Plot')
-    plt.xlabel('Index')
-    plt.ylabel('Value')
-    plt.legend()
 
-    plt.savefig(png_path)
-    # save to txt
-    with open(txt_path, 'w') as f:
-        for i in range(len(errors)):
-            f.write(f'Rank: {i+1:.3d}, Error: {errors[i]:.10f}, Ratio: {ratios[i]:.10f}, Singular Value: {s[i]:.10f}\n')
+def check_output_path(path):
+    resolved = Path(path).expanduser().resolve()
+    if resolved == ASSET_ROOT or ASSET_ROOT in resolved.parents:
+        raise ValueError("Outputs and caches cannot be placed under /data/HF_MODELS")
+    return resolved
 
+
+def configure_runtime(cpu_threads=2):
+    cache = PROJECT_ROOT / ".cache"
+    paths = {
+        "HF_HOME": cache / "huggingface",
+        "HF_DATASETS_CACHE": cache / "huggingface/datasets",
+        "HF_HUB_CACHE": cache / "huggingface/hub",
+        "TORCH_HOME": cache / "torch",
+        "MPLCONFIGDIR": cache / "matplotlib",
+        "TRITON_CACHE_DIR": cache / "triton",
+        "TORCHINDUCTOR_CACHE_DIR": cache / "inductor",
+        "TMPDIR": cache / "tmp",
+    }
+    for key, path in paths.items():
+        path.mkdir(parents=True, exist_ok=True)
+        os.environ[key] = str(path)
+    for key in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ[key] = str(cpu_threads)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    sys.dont_write_bytecode = True
+    return cache
+
+
+def seed_training(seed):
+    import random
+    import numpy as np
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def cpu_tree(value):
+    import torch
+
+    if isinstance(value, torch.Tensor):
+        return value.detach().to("cpu", copy=True)
+    if isinstance(value, dict):
+        return {key: cpu_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [cpu_tree(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(cpu_tree(item) for item in value)
+    return value
+
+
+def json_write(path, value):
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)

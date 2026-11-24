@@ -1,0 +1,21 @@
+{
+  "master_addr": "192.168.1.10",
+  "master_port": 29517,
+  "nodes": [
+    {
+      "name": "node-a",
+      "devices": [
+        "cuda:0",
+        "cuda:1"
+      ],
+      "interface": "eth0"
+    },
+    {
+      "name": "node-b",
+      "devices": [
+        "cuda:0"
+      ],
+      "interface": "eth0"
+    }
+  ]
+}
